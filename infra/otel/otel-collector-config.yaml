@@ -1,0 +1,46 @@
+# OpenTelemetry Collector — Phase 0
+# One pipeline for traces (-> Jaeger) and one for metrics (-> Prometheus scrape).
+# Every service exports OTLP to this collector; we keep the fan-out here so
+# services don't need to know about Jaeger/Prometheus directly.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+exporters:
+  # Traces -> Jaeger (OTLP ingest).
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  # Metrics -> exposed for Prometheus to scrape on :8889.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+  # Console echo — handy while learning; drop to `warn` verbosity in prod.
+  debug:
+    verbosity: normal
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/jaeger, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]

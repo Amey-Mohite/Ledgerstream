@@ -1,0 +1,274 @@
+# =============================================================================
+# Ledgerstream — local orchestration (Phase 0: infrastructure skeleton only)
+#
+# TWO RUN MODES via compose profiles:
+#   • DEFAULT  `docker compose up -d --wait`
+#       Starts Kafka + Schema Registry + observability ONLY. The data stores
+#       (postgres/mongo/redis) are skipped because daily dev uses cloud free
+#       tiers (Neon/Upstash/Atlas). See docs/cloud-free-tiers.md.
+#   • FULL     `docker compose --profile full up -d --wait`
+#       Also starts local postgres ×2 / mongo / redis — a fully-offline demo
+#       needing no cloud accounts. Point .env at the LOCAL alternatives.
+#
+# Services carrying `profiles: [full]` run only in FULL mode; everything else
+# runs in both. Ports published to the host avoid common local clashes
+# (Postgres 5433/5434, Kafka 29092).
+# =============================================================================
+#
+# HOW COMPOSE READS THIS FILE  (what happens on `docker compose up -d --wait`)
+# -----------------------------------------------------------------------------
+#   1. LOAD        read this YAML as text
+#   2. INTERPOLATE substitute ${VARS} from .env
+#   3. PARSE       build an in-memory model: a list of Service objects, each
+#                  with a `profiles` field (kafka -> [], postgres -> ["full"])
+#   4. PROFILES    active set = --profile flags + COMPOSE_PROFILES
+#                  (plain `up` with no --profile  ->  active set is EMPTY)
+#   5. FILTER      keep a service IF its profiles list is empty
+#                     OR one of its profiles is in the active set
+#                  => kafka / schema-registry / otel / jaeger / prometheus  KEPT
+#                  => postgres-* / mongo / redis  (profiles:[full])          DROPPED
+#   6. PLAN        pull in depends_on deps; order by health
+#   7. EXECUTE     send API calls to the Docker daemon:
+#                  create network -> volumes -> containers -> start
+#   8. --wait      poll each container's health until healthy/exited
+#
+# The "condition" is NOT an if-block anywhere — it's the `profiles:` key on a
+# service plus Compose's step-5 rule above. Full walkthrough:
+# docs/docker-compose-explained.md
+# =============================================================================
+
+name: ledgerstream
+
+networks:
+  ledgerstream:
+    driver: bridge
+
+volumes:
+  kafka-data:
+  postgres-payment-data:
+  postgres-ledger-data:
+  mongo-data:
+  redis-data:
+
+services:
+  # ---------------------------------------------------------------------------
+  # Kafka — single-node KRaft mode (no ZooKeeper). This node is BOTH broker and
+  # controller, which is fine for local dev. Replication factors are 1 because
+  # there is one broker; in prod these would be >=3 across brokers.
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: ls-kafka
+    networks: [ledgerstream]
+    ports:
+      - "29092:29092" # EXTERNAL listener — host/laptop clients (native services, CLI)
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      # Three listeners. The NAME says WHY each exists; all use the PLAINTEXT
+      # protocol locally (see KAFKA_LISTENER_SECURITY_PROTOCOL_MAP below).
+      #   INTERNAL   -> other containers on the Docker network (e.g. schema-registry)
+      #                 + broker<->broker traffic.  Reached by Docker DNS name "kafka".
+      #   CONTROLLER -> the KRaft controller quorum (Kafka's internal metadata /
+      #                 leader election). Not advertised to clients.
+      #   EXTERNAL   -> clients on your laptop/host: your NATIVE Payment/Ledger
+      #                 services and CLI tools. Reached by "localhost:29092".
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+      # Each pair is  <listenerNAME>:<securityPROTOCOL>. Names are ours; protocol
+      # is PLAINTEXT (unencrypted) everywhere locally -> SASL_SSL in production.
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Auto-create is OFF on purpose: topics are declared explicitly (Phase 2)
+      # so partition counts / configs are intentional, not accidental.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      CLUSTER_ID: "ledgerstream-local-cluster-0"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Confluent Schema Registry — stores/serves Avro schemas + enforces the
+  # compatibility rule (we set BACKWARD) that governs schema evolution.
+  # ---------------------------------------------------------------------------
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.7.0
+    container_name: ls-schema-registry
+    networks: [ledgerstream]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:9092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      # Global default compatibility for schema evolution.
+      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: BACKWARD
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/subjects >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Postgres — one instance PER service (database-per-service boundary).
+  # ---------------------------------------------------------------------------
+  postgres-payment:
+    image: postgres:16
+    container_name: ls-postgres-payment
+    # `full` profile only: default runs use Neon (cloud). See docs/cloud-free-tiers.md
+    profiles: [full]
+    networks: [ledgerstream]
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: ${PAYMENT_DB_NAME:-payment}
+      POSTGRES_USER: ${PAYMENT_DB_USER:-payment}
+      POSTGRES_PASSWORD: ${PAYMENT_DB_PASSWORD:-payment_dev_pw}
+    volumes:
+      - postgres-payment-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PAYMENT_DB_USER:-payment} -d ${PAYMENT_DB_NAME:-payment}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  postgres-ledger:
+    image: postgres:16
+    container_name: ls-postgres-ledger
+    # `full` profile only: default runs use Neon (cloud). See docs/cloud-free-tiers.md
+    profiles: [full]
+    networks: [ledgerstream]
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_DB: ${LEDGER_DB_NAME:-ledger}
+      POSTGRES_USER: ${LEDGER_DB_USER:-ledger}
+      POSTGRES_PASSWORD: ${LEDGER_DB_PASSWORD:-ledger_dev_pw}
+    volumes:
+      - postgres-ledger-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${LEDGER_DB_USER:-ledger} -d ${LEDGER_DB_NAME:-ledger}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # MongoDB — read-optimized, denormalized transaction view (Phase 4),
+  # projected from ledger.events. NoSQL because it's a rebuildable read model.
+  # ---------------------------------------------------------------------------
+  mongo:
+    image: mongo:7
+    container_name: ls-mongo
+    # `full` profile only: default runs use Atlas (cloud). See docs/cloud-free-tiers.md
+    profiles: [full]
+    networks: [ledgerstream]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok' | grep -q 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Redis — cache-aside (Phase 4) + token-bucket rate-limit state (Phase 4).
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: ls-redis
+    # `full` profile only: default runs use Upstash (cloud). See docs/cloud-free-tiers.md
+    profiles: [full]
+    networks: [ledgerstream]
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  # ---------------------------------------------------------------------------
+  # OpenTelemetry Collector — single ingestion point for traces + metrics from
+  # every service. Fans traces out to Jaeger and exposes metrics to Prometheus.
+  # ---------------------------------------------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.109.0
+    container_name: ls-otel-collector
+    networks: [ledgerstream]
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4317:4317" # OTLP gRPC (services push here)
+      - "4318:4318" # OTLP HTTP
+    depends_on:
+      jaeger:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:13133/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Jaeger — distributed-trace UI (http://localhost:16686). Accepts OTLP
+  # directly from the collector.
+  # ---------------------------------------------------------------------------
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    container_name: ls-jaeger
+    networks: [ledgerstream]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686" # UI
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:14269/ >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Prometheus — scrapes the collector's exported app metrics + itself.
+  # UI at http://localhost:9090.
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: ls-prometheus
+    networks: [ledgerstream]
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s

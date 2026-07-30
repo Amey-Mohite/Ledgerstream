@@ -1,0 +1,72 @@
+# System Design Concepts — the handbook
+
+This folder is your **standalone system-design textbook**. Each file explains one
+principle **in general** — what it is, the problem it solves, how it works, its
+variations and trade-offs, when to use it (and when not), and the interview
+questions you should be able to answer. The Ledgerstream-specific usage is a
+short note at the end of each; the bulk is knowledge you can carry anywhere.
+
+> **How to use this:** when you hit a term you don't know in `DESIGN.md` or a
+> `docs/phaseN.md`, come here and read the matching concept file end to end.
+
+---
+
+## Reading order (foundations first)
+
+If you're starting cold, read in this order — each builds on the previous:
+
+1. [Microservices & Database-per-Service](microservices-and-database-per-service.md)
+2. [Event-Driven Architecture & the Message Bus](event-driven-architecture.md)
+3. [Apache Kafka — deep dive](kafka.md)
+4. [CAP & PACELC](cap-and-pacelc.md)
+5. [Consensus & Coordination (Raft, quorums)](consensus-and-coordination.md)
+6. [Schema Evolution & Contracts](schema-evolution-and-contracts.md)
+7. [Schema Registry — deep dive](schema-registry.md)
+8. [Observability (logs, metrics, traces)](observability.md)
+9. [OpenTelemetry & the Collector — deep dive](opentelemetry-collector.md)
+10. [Jaeger — deep dive (tracing backend)](jaeger.md)
+11. [Prometheus — deep dive (metrics)](prometheus.md)
+12. [Health Checks, Liveness & Readiness](health-checks-liveness-readiness.md)
+13. [The Saga Pattern](saga-pattern.md)
+
+---
+
+## Concept → phase map
+
+| Concept | Deep-dive | Where it shows up | Status |
+|---|---|---|---|
+| Microservices & database-per-service | [link](microservices-and-database-per-service.md) | whole architecture | ✅ written |
+| Event-driven architecture / message bus | [link](event-driven-architecture.md) | Kafka backbone | ✅ written |
+| Apache Kafka internals (deep dive) | [link](kafka.md) | Kafka backbone | ✅ written |
+| CAP & PACELC | [link](cap-and-pacelc.md) | DESIGN.md §6 | ✅ written |
+| Consensus & coordination (Raft/KRaft) | [link](consensus-and-coordination.md) | Kafka KRaft, Postgres | ✅ written |
+| Schema evolution & contracts | [link](schema-evolution-and-contracts.md) | Avro + Schema Registry | ✅ written |
+| Schema Registry internals (deep dive) | [link](schema-registry.md) | Confluent SR container | ✅ written |
+| Observability (3 pillars) | [link](observability.md) | OTel/Jaeger/Prometheus | ✅ written |
+| OpenTelemetry & the Collector (deep dive) | [link](opentelemetry-collector.md) | otel-collector container | ✅ written |
+| Jaeger — tracing backend (deep dive) | [link](jaeger.md) | jaeger container | ✅ written |
+| Prometheus — metrics (deep dive) | [link](prometheus.md) | prometheus container | ✅ written |
+| Health checks (liveness/readiness) | [link](health-checks-liveness-readiness.md) | compose healthchecks | ✅ written |
+| Saga pattern | [link](saga-pattern.md) | Payment→Ledger flow | ✅ written (you asked!) |
+| Outbox pattern | _phase 1–2_ | Payment producer | ⏳ with Phase 1 |
+| Idempotency | _phase 1–2_ | payments + consumers | ⏳ with Phase 1 |
+| Partitioning & consistent hashing | _phase 2_ | Kafka keys, DB sharding | ⏳ with Phase 2 |
+| Dead-letter queues & retries/backoff | _phase 3_ | consumer resilience | ⏳ with Phase 3 |
+| Caching & cache invalidation | _phase 4_ | Redis cache-aside | ⏳ with Phase 4 |
+| Rate limiting & backpressure | _phase 4_ | token bucket | ⏳ with Phase 4 |
+| Circuit breakers & graceful degradation | _phase 4_ | external calls | ⏳ with Phase 4 |
+| Cursor pagination | _phase 4_ | history APIs | ⏳ with Phase 4 |
+| Double-entry ledger / event sourcing ideas | _phase 2_ | ledger core | ⏳ with Phase 2 |
+| Multi-tenancy & isolation | _phase 1_ | every data access | ⏳ with Phase 1 |
+| RAG / LLM gateway / AI guardrails | _phase 6_ | AI Query service | ⏳ with Phase 6 |
+
+**Forward references you may hit early in DESIGN.md** (teasers until their full
+file lands):
+- **Outbox pattern** — how to update a database *and* publish an event without
+  them getting out of sync. One-liner: write the event into your own DB in the
+  same transaction as the business change, then a separate process ships it to
+  the message bus.
+- **Idempotency** — making an operation safe to run more than once with the same
+  result (so retries don't double-charge).
+- **Consistent hashing** — a way to map keys to nodes/partitions so that adding
+  or removing a node moves *few* keys, not all of them.

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ledgerstream-shared"
+version = "0.1.0"
+description = "Cross-service primitives for Ledgerstream: structured logging, correlation IDs, OTel tracing, Prometheus metrics, config."
+requires-python = ">=3.11"
+dependencies = [
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.27.0",
+    "prometheus-client>=0.20.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ledgerstream_shared*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
