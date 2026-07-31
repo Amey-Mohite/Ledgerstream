@@ -7,7 +7,8 @@
 > the way it is. It is updated at the end of every phase. Read it top-to-bottom
 > to defend any decision in an interview.
 
-**Status:** Phase 0 complete (infrastructure skeleton + observability + this doc).
+**Status:** Phase 1 complete (Payment service: multi-tenant, JWT, idempotency,
+outbox, health, tests — verified end-to-end against Neon).
 
 ---
 
@@ -339,3 +340,48 @@ of two extra containers and binary (less eyeball-friendly) payloads.
   globals) is correct across both Django threads and FastAPI coroutines.
 - **Schema Registry BACKWARD compatibility**: know what "backward compatible"
   means (new schema can read data written by old schema) before Phase 2.
+
+### Phase 1 — Payment Service ✅
+**Delivered:** the Payment service as its own Django project + its own Postgres
+(Neon), with: multi-tenant models (`Tenant`/`Membership`, `tenant` FK on every
+row); **JWT auth** (DRF SimpleJWT) with a `tenant_id` claim; **idempotency**
+(UNIQUE `(tenant, idempotency_key)` + race-safe create); authorize→capture
+lifecycle; the **outbox** table with an atomic `PaymentCaptured` write on capture;
+liveness/readiness probes; correlation-id middleware; connection pooling
+(`conn_max_age`); a `create_tenant` command; a `Dockerfile` (non-root, gunicorn
+graceful shutdown); and passing tests (tenant-isolation, idempotency-retry, atomic
+outbox). **Verified end-to-end against Neon** (migrate + full curl flow: 401 →
+create 201 → idempotent replay 200 → capture → outbox row PENDING).
+
+**Skills checked off:** multi-tenancy + data-layer scoping + **proven isolation
+test** · JWT/OAuth2 auth · idempotency · outbox pattern (dual-write solved) ·
+`@transaction.atomic` · strong consistency on the capture (`SELECT FOR UPDATE`) ·
+migrations · indexing (outbox `(status, created_at)`, payment `(tenant, created_at)`)
+· connection pooling · UUID PKs · health checks (liveness/readiness) · graceful
+shutdown · structured logs + correlation-id end-to-end · per-service Dockerfile.
+
+**Concept docs written:** `outbox-pattern.md`, `idempotency.md`, `multi-tenancy.md`
+(example-first, with the real code). Teaching walkthrough: `docs/phase1.md`.
+
+**Decisions & trade-offs:**
+- **Money as integer minor units** (never float) — floats can't represent 0.10
+  exactly; a correctness requirement for money.
+- **Idempotency enforced at the data layer** (UNIQUE constraint), not just an
+  app-level check — the DB is the race referee. 201 on create, 200 on replay.
+- **Tenant identity from the signed JWT only**, never a client header/param —
+  a forgeable tenant is no isolation. 404 (not 403) on foreign ids (no enumeration).
+- **Auth (Django User) kept separate from tenancy (Membership)** — avoids a custom
+  user model for one field; smaller blast radius.
+- **Outbox relay deferred to Phase 2** — Phase 1 writes PENDING rows; nothing ships
+  to Kafka yet (correct: there's no consumer until Phase 2).
+
+**Tests run against LOCAL Postgres, app runs against Neon** — per the §10 load-test
+/ cloud-latency decision; `--reuse-db` avoids the test-DB teardown-drop conflict.
+
+**Scaffolded — be ready to explain (may not fully grasp yet):**
+- `@transaction.atomic` wrapping the status change **and** the outbox insert (why
+  one transaction — the dual-write problem).
+- `SELECT ... FOR UPDATE` in capture (row lock → no double emit under concurrency).
+- The idempotency **race** and why the UNIQUE constraint is the backstop.
+- Why the tenant claim must come from the signed token.
+- `conn_max_age` pooling against a remote DB (avoid per-request TLS handshake).
