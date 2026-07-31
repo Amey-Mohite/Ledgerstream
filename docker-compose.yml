@@ -89,6 +89,11 @@ services:
       # so partition counts / configs are intentional, not accidental.
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       CLUSTER_ID: "ledgerstream-local-cluster-0"
+      # Write the log (topics/partitions/offsets/KRaft metadata) to the MOUNTED
+      # volume. Without this, the apache/kafka image defaults log.dirs to
+      # /tmp/kafka-logs — ephemeral — so the volume below does nothing and data is
+      # lost on container recreation. The volume path MUST match this dir.
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:

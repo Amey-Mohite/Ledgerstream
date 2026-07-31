@@ -7,8 +7,9 @@
 > the way it is. It is updated at the end of every phase. Read it top-to-bottom
 > to defend any decision in an interview.
 
-**Status:** Phase 1 complete (Payment service: multi-tenant, JWT, idempotency,
-outbox, health, tests — verified end-to-end against Neon).
+**Status:** Phase 2 complete (event backbone: Avro + Schema Registry, outbox relay
+→ Kafka, Ledger service consuming into an immutable double-entry ledger — verified
+end-to-end: capture → relay → Kafka → consumer → balances).
 
 ---
 
@@ -262,6 +263,15 @@ _(Grows each phase. Seeds:)_
   free tiers; prod would be RDS/ElastiCache/Atlas paid tiers (or self-hosted on
   k8s) with proper sizing, backups, and multi-AZ. Kafka moves from local Docker to
   MSK/Confluent with SASL_SSL + RF=3/minISR=2/acks=all. All via config, not code.
+- **Hand-rolled JWT issuance → managed IdP (Auth0/Cognito/Clerk).** We built token
+  *issuance* (login, `core/tokens.py`, User/Membership) ONLY to run self-contained
+  and to demonstrate the mechanism once. Production offloads issuance to a managed
+  identity provider: password/MFA/social/SSO + user management. Crucially, the part
+  that matters architecturally — **services validating the token statelessly and
+  reading claims** (`StatelessJWTAuthentication`) — is unchanged; it just verifies
+  against the IdP's **public key (RS256 via JWKS)** instead of a shared HS256
+  secret, with `tenant_id` as a custom claim (Auth0 Organizations for multi-
+  tenancy). Integration change, not an architecture change.
 - **Load testing runs against full-local infra, not cloud free tiers** — cloud
   latency + throttling would swamp the architecture's own numbers, so Phase 5 uses
   `make full-up` (or is documented as methodology + expected figures).
@@ -385,3 +395,84 @@ shutdown · structured logs + correlation-id end-to-end · per-service Dockerfil
 - The idempotency **race** and why the UNIQUE constraint is the backstop.
 - Why the tenant claim must come from the signed token.
 - `conn_max_age` pooling against a remote DB (avoid per-request TLS handshake).
+
+### Phase 2 — Event Backbone + Ledger ✅
+**Delivered:** Avro event contract (`schemas/avro/payment_captured.avsc`) governed
+by **BACKWARD** compatibility; explicit **topic creation** (6 partitions,
+auto-create off); the **outbox relay worker** (Payment) — standalone process,
+idempotent producer (`acks=all`), Avro-serializes PENDING rows and publishes to
+Kafka keyed by `partition_key`, marks PUBLISHED; the **Ledger service** — its own
+Django project + own Neon Postgres, a **standalone consumer worker** (group
+`ledger-service`) that decodes Avro (schema-by-id from the registry), posts an
+**immutable double-entry journal** (DEBIT CASH / CREDIT MERCHANT_PAYABLE) in one
+transaction with a `debits==credits` assertion, **idempotent** on a UNIQUE
+`event_id`, committing offsets **after** the DB write (at-least-once); a
+tenant-scoped **balances/history read API** with **stateless JWT** (service-to-
+service trust via the shared signing key). **Verified end-to-end** against Neon +
+real Kafka: capture → outbox → relay (schema auto-registered) → Kafka → consumer →
+2 balanced journal entries → balances API (CASH +500 / PAYABLE −500). Tests:
+Payment 7 + Ledger 4 (idempotency, balanced double-entry, derived balances, auth).
+
+**Skills checked off:** Kafka topics/partitions/consumer-groups · partition key
+`hash(tenant, account)` + hot-partition note · **Avro schema registry + auto-
+registration** · outbox **relay** (dual-write fully solved end-to-end) · **idempotent
+consumer** (UNIQUE event_id) · at-least-once + offset-commit-after-processing ·
+**immutable double-entry ledger** (append-only, derived balances) · standalone
+worker processes (relay + consumer, not the request cycle) · **service-to-service
+auth** (stateless JWT via shared key) · second service with its own DB (database-
+per-service made real) · graceful shutdown on workers · correlation-id propagated
+across services via the event.
+
+**Concept docs written:** `double-entry-ledger.md`, `partitioning-and-consistent-
+hashing.md`. Teaching walkthrough: `docs/phase2.md`.
+
+**Decisions & trade-offs:**
+- **Avro chosen** (over JSON Schema) — compact wire format (5-byte header, schema
+  fetched by id) + rich BACKWARD evolution. Consumer needs no local `.avsc` (reads
+  writer schema from the registry); only the producer/relay loads the schema.
+- **Consumer reads the writer schema from the registry** — so the Ledger doesn't
+  ship schema files; the Payment relay does.
+- **Stateless JWT on the Ledger** — validates the shared-key signature + reads
+  `tenant_id`, no user table. Correct microservice pattern: verify, don't look up.
+- **At-least-once, not exactly-once** — relay may re-publish, consumer may
+  redeliver; correctness comes from the **idempotent consumer** (UNIQUE event_id),
+  giving *effectively-once*. Honest: true end-to-end exactly-once across Kafka + an
+  external DB isn't attempted.
+- **Chose double-entry (DEBIT CASH / CREDIT MERCHANT_PAYABLE)** — a minimal but
+  real chart of accounts; balances are **derived**, not stored.
+- **Config bug fixed:** native workers must use host Kafka/SR addresses
+  (`localhost:29092`, `localhost:8081`), not the in-cluster names — the EXTERNAL
+  vs INTERNAL listener distinction, in practice.
+- **Durability bug fixed — Kafka volume was silently unused.** The `apache/kafka`
+  image defaults `log.dirs` to `/tmp/kafka-logs` (ephemeral), so our
+  `kafka-data:/var/lib/kafka/data` volume held **nothing** — all topics, messages,
+  offsets, and KRaft metadata lived in `/tmp` and would vanish on container
+  recreation (`docker compose down && up`). Fix: set
+  `KAFKA_LOG_DIRS=/var/lib/kafka/data` so the broker writes to the mounted volume.
+  **Lesson:** a data volume does nothing unless it matches the process's actual
+  data path — verified by force-recreating the container and confirming topics
+  survive.
+- **Batch capture** (`POST /api/payments/capture`, `{payment_ids:[...]}`) with
+  **partial-success semantics** (207 Multi-Status + per-item results), reusing the
+  idempotent per-payment `capture_payment` (each item its own transaction + event).
+  One request → many events → demonstrates the pipeline and consumer-group
+  partitioning. Batch capped at 100 (async for larger). Verified live end-to-end:
+  batch of 3 → Kafka → ledger CASH 500→2600 (with eventual-consistency lag observed).
+- **Consumer rebalance logging** (`on_assign`/`on_revoke`) added so running two
+  consumers in one group visibly splits partitions (rebalancing awareness).
+- **Relay HA gap closed:** `run_once` now claims PENDING rows inside a transaction
+  with `SELECT ... FOR UPDATE SKIP LOCKED`, so **multiple relay instances run
+  safely** — each locks a disjoint batch, others skip locked rows, no
+  double-publishing; a crashed relay's rows roll back to PENDING and are reclaimed.
+  Verified live: 12 concurrent workers coordinated with zero duplicate publishes.
+  Consumers already scale via consumer groups; the relay was the only single-
+  instance component. (Trade-off noted in relay.py: the lock is held across the
+  Kafka produce; at huge scale, switch to a claim/PROCESSING state + stale-reclaim.)
+
+**Scaffolded — be ready to explain (may not fully grasp yet):**
+- The **Avro 5-byte wire header** (magic + schema id) and schema-by-id fetch.
+- **Offset commit AFTER processing** = at-least-once (vs before = at-most-once).
+- Why `hash % N` makes Kafka partition counts hard to change (→ pick generously).
+- **Idempotent producer** (`enable.idempotence`) vs **idempotent consumer** (UNIQUE
+  event_id) — two different dedupe mechanisms at two different hops.
+- Stateless service-to-service JWT validation (no shared user store).

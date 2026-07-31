@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 
 from core.exceptions import InvalidStateTransition
@@ -118,3 +119,36 @@ def capture_payment(*, tenant_id, payment_id, correlation_id: str = "") -> tuple
         extra={"payment_id": str(payment.id), "tenant_id": str(tenant_id)},
     )
     return payment, True
+
+
+def capture_payments_batch(*, tenant_id, payment_ids, correlation_id: str = "") -> list[dict]:
+    """Capture many payments with PARTIAL-SUCCESS semantics.
+
+    Each id is captured in its OWN transaction (reusing `capture_payment`), so one
+    bad id never rolls back the others. Returns a per-item result list; the caller
+    surfaces it as HTTP 207 Multi-Status. Each successful capture writes its own
+    outbox row → its own Kafka event → its own ledger entry (per-account ordering
+    preserved). Naturally idempotent: re-running yields `already_captured`.
+    """
+    results: list[dict] = []
+    for pid in payment_ids:
+        try:
+            payment, emitted = capture_payment(
+                tenant_id=tenant_id, payment_id=pid, correlation_id=correlation_id
+            )
+            results.append(
+                {
+                    "payment_id": str(pid),
+                    "status": payment.status,
+                    "outcome": "captured" if emitted else "already_captured",
+                }
+            )
+        except (Payment.DoesNotExist, DjangoValidationError, ValueError):
+            # Unknown id, another tenant's id, or a malformed UUID — don't leak,
+            # don't crash the batch.
+            results.append({"payment_id": str(pid), "outcome": "not_found"})
+        except InvalidStateTransition as exc:
+            results.append(
+                {"payment_id": str(pid), "outcome": "invalid_state", "detail": str(exc)}
+            )
+    return results

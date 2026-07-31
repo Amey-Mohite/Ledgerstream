@@ -1,0 +1,10 @@
+# Ledger service — runtime dependencies
+Django>=5.1,<5.2
+djangorestframework>=3.15
+djangorestframework-simplejwt>=5.3        # JWT VALIDATION only (shared signing key)
+psycopg[binary]>=3.2
+dj-database-url>=2.2
+gunicorn>=22.0
+python-dotenv>=1.0
+confluent-kafka[avro]>=2.5                 # Kafka consumer + Avro
+fastavro>=1.9

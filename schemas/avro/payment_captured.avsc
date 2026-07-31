@@ -1,0 +1,17 @@
+{
+  "type": "record",
+  "name": "PaymentCaptured",
+  "namespace": "com.ledgerstream.payments",
+  "doc": "Emitted when a payment is captured. Consumed by the Ledger service to post a double-entry journal. Shared contract between the Payment producer and the Ledger consumer; evolve with BACKWARD compatibility (add fields WITH defaults, never rename/remove required).",
+  "fields": [
+    { "name": "event_id", "type": "string", "doc": "Unique event id (the outbox row id). Consumers dedupe on this for idempotency." },
+    { "name": "event_version", "type": "int", "default": 1 },
+    { "name": "occurred_at", "type": { "type": "long", "logicalType": "timestamp-millis" }, "doc": "When the capture happened (outbox row created_at)." },
+    { "name": "correlation_id", "type": "string", "default": "", "doc": "Ties this event to the originating request's logs/traces across services." },
+    { "name": "tenant_id", "type": "string" },
+    { "name": "payment_id", "type": "string" },
+    { "name": "amount_minor", "type": "long", "doc": "Amount in minor units (e.g. cents). Integer, never float." },
+    { "name": "currency", "type": "string", "doc": "ISO 4217, e.g. USD." },
+    { "name": "reference", "type": "string", "default": "" }
+  ]
+}

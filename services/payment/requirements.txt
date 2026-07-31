@@ -6,6 +6,8 @@ psycopg[binary]>=3.2                       # PostgreSQL driver (psycopg3)
 dj-database-url>=2.2                        # parse DATABASE_URL (Neon) into Django config
 gunicorn>=22.0                             # production WSGI server
 python-dotenv>=1.0                         # load .env for native local dev
+confluent-kafka[avro]>=2.5                 # Kafka producer + Avro (outbox relay)
+fastavro>=1.9                              # Avro encoding
 
 # Shared observability library (installed separately, editable):
 #   pip install -e ../../libs/shared

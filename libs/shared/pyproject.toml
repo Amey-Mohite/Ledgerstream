@@ -18,6 +18,12 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
 ]
+# Kafka producers/consumers install this extra: `pip install ledgerstream-shared[kafka]`.
+# Kept optional so services that don't touch Kafka don't pull in librdkafka.
+kafka = [
+    "confluent-kafka[avro]>=2.5",
+    "fastavro>=1.9",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

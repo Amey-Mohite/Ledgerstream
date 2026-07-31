@@ -8,6 +8,7 @@ A missing/foreign id returns 404, never another tenant's record.
 from __future__ import annotations
 
 from rest_framework import status
+from rest_framework.exceptions import ValidationError
 from rest_framework.generics import get_object_or_404
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -17,9 +18,10 @@ from core.tenancy import require_tenant_id
 
 from .models import Payment
 from .serializers import PaymentCreateSerializer, PaymentSerializer
-from .services import authorize_payment, capture_payment
+from .services import authorize_payment, capture_payment, capture_payments_batch
 
 IDEMPOTENCY_HEADER = "Idempotency-Key"
+MAX_BATCH_CAPTURE = 100
 
 
 class PaymentListCreateView(APIView):
@@ -54,6 +56,34 @@ class PaymentDetailView(APIView):
             Payment.objects.for_tenant(tenant_id), id=payment_id
         )
         return Response(PaymentSerializer(payment).data)
+
+
+class PaymentBatchCaptureView(APIView):
+    """Capture many payments in one request, with partial-success results.
+
+    Body: {"payment_ids": ["<uuid>", ...]}. Returns 207 Multi-Status with a
+    per-item `results` list (captured / already_captured / not_found /
+    invalid_state). Each captured payment emits its own Kafka event → a great way
+    to watch the event pipeline move a batch at once.
+    """
+
+    def post(self, request: Request) -> Response:
+        tenant_id = require_tenant_id(request)
+        payment_ids = request.data.get("payment_ids")
+
+        if not isinstance(payment_ids, list) or not payment_ids:
+            raise ValidationError("payment_ids must be a non-empty list.")
+        if len(payment_ids) > MAX_BATCH_CAPTURE:
+            raise ValidationError(
+                f"Batch too large: {len(payment_ids)} > max {MAX_BATCH_CAPTURE}."
+            )
+
+        results = capture_payments_batch(
+            tenant_id=tenant_id,
+            payment_ids=payment_ids,
+            correlation_id=getattr(request, "correlation_id", ""),
+        )
+        return Response({"results": results}, status=status.HTTP_207_MULTI_STATUS)
 
 
 class PaymentCaptureView(APIView):

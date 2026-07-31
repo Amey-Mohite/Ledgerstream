@@ -189,6 +189,13 @@ persists across restarts/recreates. Two kinds appear in our file:
 - **Named volumes** (for *data* you must keep): `kafka-data:/var/lib/kafka/data`,
   `postgres-*-data:/var/lib/postgresql/data`, `mongo-data`, `redis-data`. Docker
   manages where these live on disk.
+
+> ⚠️ **Gotcha: a volume does nothing unless it matches the process's *actual* data
+> path.** The `apache/kafka` image defaults its log dir to `/tmp/kafka-logs`, so
+> mounting a volume at `/var/lib/kafka/data` alone left it **empty** — all data sat
+> in ephemeral `/tmp` and would vanish on container recreation. We had to also set
+> `KAFKA_LOG_DIRS=/var/lib/kafka/data` so the broker writes *to* the volume. Always
+> confirm the container writes where you mounted (`docker exec <c> ls <path>`).
 - **Bind mounts** (for *config* we author): `./infra/otel/otel-collector-config.yaml:/etc/otel/config.yaml:ro`
   maps a file from our repo into the container. The trailing **`:ro`** = **read-
   only** (the container can read our config but not modify it).
