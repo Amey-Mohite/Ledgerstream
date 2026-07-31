@@ -28,6 +28,9 @@ If you're starting cold, read in this order — each builds on the previous:
 11. [Prometheus — deep dive (metrics)](prometheus.md)
 12. [Health Checks, Liveness & Readiness](health-checks-liveness-readiness.md)
 13. [The Saga Pattern](saga-pattern.md)
+14. [The Outbox Pattern](outbox-pattern.md)  *(Phase 1)*
+15. [Idempotency](idempotency.md)  *(Phase 1)*
+16. [Multi-Tenancy & Tenant Isolation](multi-tenancy.md)  *(Phase 1)*
 
 ---
 
@@ -48,8 +51,8 @@ If you're starting cold, read in this order — each builds on the previous:
 | Prometheus — metrics (deep dive) | [link](prometheus.md) | prometheus container | ✅ written |
 | Health checks (liveness/readiness) | [link](health-checks-liveness-readiness.md) | compose healthchecks | ✅ written |
 | Saga pattern | [link](saga-pattern.md) | Payment→Ledger flow | ✅ written (you asked!) |
-| Outbox pattern | _phase 1–2_ | Payment producer | ⏳ with Phase 1 |
-| Idempotency | _phase 1–2_ | payments + consumers | ⏳ with Phase 1 |
+| Outbox pattern | [link](outbox-pattern.md) | Payment producer | ✅ written |
+| Idempotency | [link](idempotency.md) | payments + consumers | ✅ written |
 | Partitioning & consistent hashing | _phase 2_ | Kafka keys, DB sharding | ⏳ with Phase 2 |
 | Dead-letter queues & retries/backoff | _phase 3_ | consumer resilience | ⏳ with Phase 3 |
 | Caching & cache invalidation | _phase 4_ | Redis cache-aside | ⏳ with Phase 4 |
@@ -57,7 +60,7 @@ If you're starting cold, read in this order — each builds on the previous:
 | Circuit breakers & graceful degradation | _phase 4_ | external calls | ⏳ with Phase 4 |
 | Cursor pagination | _phase 4_ | history APIs | ⏳ with Phase 4 |
 | Double-entry ledger / event sourcing ideas | _phase 2_ | ledger core | ⏳ with Phase 2 |
-| Multi-tenancy & isolation | _phase 1_ | every data access | ⏳ with Phase 1 |
+| Multi-tenancy & isolation | [link](multi-tenancy.md) | every data access | ✅ written |
 | RAG / LLM gateway / AI guardrails | _phase 6_ | AI Query service | ⏳ with Phase 6 |
 
 **Forward references you may hit early in DESIGN.md** (teasers until their full
