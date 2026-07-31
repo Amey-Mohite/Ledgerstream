@@ -22,7 +22,11 @@ RUN pip install /app/libs/shared
 COPY services/payment/requirements.txt /app/services/payment/requirements.txt
 RUN pip install -r /app/services/payment/requirements.txt
 
-# 3. Service code last (changes most often).
+# 3. Shared Avro schemas — the outbox relay loads these to serialize events.
+#    (Placed so the shared kafka helper's upward search finds /app/schemas/avro.)
+COPY schemas /app/schemas
+
+# 4. Service code last (changes most often).
 COPY services/payment /app/services/payment
 WORKDIR /app/services/payment
 

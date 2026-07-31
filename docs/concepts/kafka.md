@@ -286,6 +286,26 @@ assigns each partition to **exactly one** consumer in the group.
 - **Different groups each get the full stream** independently (fan-out) — Ledger
   and Analytics can both consume every payment.
 
+> **⚠️ Common misconception — partitions are the *ceiling* on parallelism, not
+> parallelism itself.** A **single** consumer assigned to 6 partitions does NOT
+> process 6 messages in parallel — it's one process with one poll loop, handling
+> messages **sequentially**. Parallelism comes from the number of **consumers**
+> (each a separate process owning a subset of partitions), capped by the partition
+> count:
+>
+> | Partitions | Consumers | Actual parallelism | Each owns |
+> |---|---|---|---|
+> | 6 | 1 | **1×** (sequential) | all 6 |
+> | 6 | 2 | **2×** | 3 each |
+> | 6 | 6 | **6×** (max) | 1 each |
+> | 6 | 7 | **6×** (7th idle) | 6 own 1 |
+>
+> So it's `min(consumers, partitions)`, never "consumers × partitions." Partitions =
+> how many parallel lanes exist; consumers = how many drivers you actually put on
+> the road (one driver covers several lanes but drives one car at a time). For low
+> volume (say 6–7 msg/s), a *single* consumer is usually plenty — the extra
+> partitions are just headroom to add consumers later without repartitioning.
+
 ### 6b. Offsets & commits (where at-least-once bugs come from)
 Each group tracks, per partition, the offset of the last record it processed, and
 **commits** it (stored in the internal `__consumer_offsets` topic). On restart or
@@ -486,6 +506,112 @@ Worth knowing for interviews — Kafka gets huge throughput from *simple* tricks
 
 ---
 
+## 10.5 Running & scaling consumers in production (deployment reference)
+
+> This is the part you'll reuse in any project: **how do consumers actually run
+> and scale in production?** Short answer — each consumer is a long-running worker
+> deployed as its **own Kubernetes Deployment**, scaled by **replicas**.
+
+### Local → production mapping
+Running `my-consumer` in two terminals locally = a Deployment with `replicas: 2`.
+Same code; only *how the process is launched* changes.
+
+```
+   LOCAL: run the consumer command N times   ⇄   PROD: Deployment replicas: N
+   (same group.id → they form one consumer group → Kafka splits partitions)
+```
+
+### The Deployment (the unit of deployment)
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: ledger-consumer }
+spec:
+  replicas: 3                          # 3 pods = 3 consumers in ONE group
+  template:
+    spec:
+      containers:
+        - name: consumer
+          image: myapp/ledger:v1        # often the SAME image as the web API...
+          command: ["python", "manage.py", "consume_payments"]  # ...different command
+          env:
+            - { name: KAFKA_BOOTSTRAP_SERVERS, value: "kafka:9092" }
+```
+All 3 pods use the same `group.id` → Kafka assigns each a share of the partitions.
+
+### One Deployment per consumer JOB (this is the rule)
+
+> **Number of Deployments = number of distinct consumer jobs (groups).**
+> **Replicas per Deployment = how much you scale THAT job (independently).**
+
+Different consumers that react to events — even to the *same* topic — each get
+their **own Deployment with a different `group.id`** (fan-out). You do NOT put them
+in one deployment, and you do NOT give them all the same replica count.
+
+| Deployment | reads | group.id | replicas | why |
+|---|---|---|---|---|
+| `ledger-consumer` | `payments.events` | `ledger-service` | 6 | heavy DB writes |
+| `analytics-consumer` | `payments.events` | `analytics` | 1 | lightweight counting |
+| `notification-consumer` | `payments.events` | `notifications` | 2 | sends emails |
+| `saga-consumer` | `ledger.events` | `payment-saga` | 3 | handles outcomes |
+
+```mermaid
+flowchart TB
+  T1["payments.events (6 partitions)"]
+  T2["ledger.events"]
+  subgraph L["ledger-consumer · group ledger-service · replicas 6"]
+    L1[pod]; L2[pod]; L3[pod]
+  end
+  subgraph A["analytics-consumer · group analytics · replicas 1"]
+    A1[pod]
+  end
+  subgraph N["notification-consumer · group notifications · replicas 2"]
+    N1[pod]; N2[pod]
+  end
+  subgraph S["saga-consumer · group payment-saga · replicas 3"]
+    S1[pod]
+  end
+  T1 --> L
+  T1 --> A
+  T1 --> N
+  T2 --> S
+```
+One topic (`payments.events`) feeds **three groups** — each gets every event
+independently (fan-out); each Deployment scales on its own.
+
+### Scaling each Deployment
+- **Manual:** `kubectl scale deployment ledger-consumer --replicas=6`.
+- **Autoscale on lag:** a HorizontalPodAutoscaler (commonly **KEDA**, which reads
+  Kafka **consumer lag**) adds pods when lag rises, removes them when it drops. Each
+  group autoscales on **its own** lag.
+- **The ceiling:** useful replicas per group ≤ the **partition count** of the
+  topic(s) it reads. 6 partitions → at most 6 working pods; extras sit idle. Add
+  partitions to raise the ceiling (choose a generous count up front — §10).
+
+### Fault tolerance you get for free
+- A pod **crashes** → Kafka sees it leave the group (session timeout) →
+  **rebalances** its partitions to surviving pods → events keep flowing.
+  Kubernetes **restarts** the pod → it rejoins → another rebalance. No lost events
+  (offsets commit after processing; at-least-once + idempotent consumer covers the
+  overlap).
+- **Rolling deploys** replace pods one at a time → brief rebalances, no downtime.
+
+### Two nuances
+- **Same image, different command:** the web API and the consumer are usually the
+  *same* Docker image run as *different* Deployments (web: `gunicorn`; consumer:
+  the consume command). One artifact, two roles.
+- **A consumer can read multiple topics** (`subscribe(["a","b"])`) if one service
+  genuinely handles several event types — one Deployment, one group, both topics.
+  But usually one service = one bounded job = one group.
+
+### The decision checklist (for your own projects)
+1. **A new *kind* of reaction to events?** → new Deployment + new `group.id`.
+2. **Need that reaction faster?** → raise *that* Deployment's `replicas` (≤ partition count), or autoscale on its lag.
+3. **Reading a different topic / different job?** → separate Deployment.
+4. **Pods scale/crash/deploy?** → Kafka rebalances automatically; make consumers idempotent so the overlap is safe.
+
+---
+
 ## 11. Kafka vs the alternatives (one-liners)
 
 - **RabbitMQ / classic queues:** smart broker, dumb consumer; messages deleted on
@@ -533,6 +659,16 @@ Worth knowing for interviews — Kafka gets huge throughput from *simple* tricks
 - *How do you pick partition count and why is it hard to change?* → From
   throughput/parallelism needs; adding partitions rewrites `hash % N` key routing
   and breaks existing per-key ordering, so choose generously up front.
+- *How do consumers run and scale in production?* → As long-running workers, one
+  **Deployment per consumer group**; scale by **replicas** (or autoscale on
+  **consumer lag** via KEDA), capped by partition count. "Run it twice locally" =
+  `replicas: 2`.
+- *You need a new reaction to the same events — what do you deploy?* → A **new
+  Deployment with a new `group.id`** (fan-out); it scales independently. Not more
+  replicas of an existing consumer.
+- *A consumer pod crashes mid-batch — what happens?* → Kafka rebalances its
+  partitions to survivors (events keep flowing), k8s restarts it, it rejoins;
+  no loss because offsets commit after processing + the consumer is idempotent.
 
 ---
 

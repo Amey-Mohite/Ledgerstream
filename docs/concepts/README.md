@@ -31,6 +31,8 @@ If you're starting cold, read in this order — each builds on the previous:
 14. [The Outbox Pattern](outbox-pattern.md)  *(Phase 1)*
 15. [Idempotency](idempotency.md)  *(Phase 1)*
 16. [Multi-Tenancy & Tenant Isolation](multi-tenancy.md)  *(Phase 1)*
+17. [The Double-Entry Ledger](double-entry-ledger.md)  *(Phase 2)*
+18. [Partitioning & Consistent Hashing](partitioning-and-consistent-hashing.md)  *(Phase 2)*
 
 ---
 
@@ -53,13 +55,13 @@ If you're starting cold, read in this order — each builds on the previous:
 | Saga pattern | [link](saga-pattern.md) | Payment→Ledger flow | ✅ written (you asked!) |
 | Outbox pattern | [link](outbox-pattern.md) | Payment producer | ✅ written |
 | Idempotency | [link](idempotency.md) | payments + consumers | ✅ written |
-| Partitioning & consistent hashing | _phase 2_ | Kafka keys, DB sharding | ⏳ with Phase 2 |
+| Partitioning & consistent hashing | [link](partitioning-and-consistent-hashing.md) | Kafka keys, DB sharding | ✅ written |
 | Dead-letter queues & retries/backoff | _phase 3_ | consumer resilience | ⏳ with Phase 3 |
 | Caching & cache invalidation | _phase 4_ | Redis cache-aside | ⏳ with Phase 4 |
 | Rate limiting & backpressure | _phase 4_ | token bucket | ⏳ with Phase 4 |
 | Circuit breakers & graceful degradation | _phase 4_ | external calls | ⏳ with Phase 4 |
 | Cursor pagination | _phase 4_ | history APIs | ⏳ with Phase 4 |
-| Double-entry ledger / event sourcing ideas | _phase 2_ | ledger core | ⏳ with Phase 2 |
+| Double-entry ledger / event sourcing ideas | [link](double-entry-ledger.md) | ledger core | ✅ written |
 | Multi-tenancy & isolation | [link](multi-tenancy.md) | every data access | ✅ written |
 | RAG / LLM gateway / AI guardrails | _phase 6_ | AI Query service | ⏳ with Phase 6 |
 
