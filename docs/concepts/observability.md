@@ -174,6 +174,78 @@ request. **This is the single most important habit in distributed debugging.**
 > journey — where it is, where it got delayed — instead of asking each depot
 > separately "did you maybe see a brown box?"
 
+### 3.5 Implementation: `contextvars` and the set/reset pattern
+
+The idea above (§3) is simple; making it *actually* attach to every log line without
+threading a `correlation_id` argument through every function is the interesting part.
+The answer is a **`contextvars.ContextVar`** — a variable whose value is **isolated
+per thread and per async task**, so a Django worker thread and a FastAPI coroutine
+each see their own id with no bleed-through, and the logging formatter can just read
+"the current context's id" whenever it emits a line.
+
+```python
+# ledgerstream_shared/correlation.py (the core)
+_correlation_id: ContextVar[str] = ContextVar("correlation_id", default="")
+
+def set_correlation_id(value) -> Token:   # returns a Token capturing the PREVIOUS value
+    return _correlation_id.set(value)
+
+def reset_correlation_id(token) -> None:  # restores whatever it was before that set
+    _correlation_id.reset(token)
+```
+
+**Why `reset` exists — and why it's not optional.** A `ContextVar` is *not*
+per-request; it lives on as long as the thread/task does. Web servers **reuse worker
+threads** and Kafka **consumers loop on one thread** across many messages. `set()`
+returns a `Token` that remembers the value *before* the set; `reset(token)` restores
+it. Wrap the work in `set … try … finally: reset`:
+
+```python
+token = set_correlation_id(cid)     # bind THIS unit's id
+try:
+    ... process (every log line now carries cid) ...
+finally:
+    reset_correlation_id(token)     # restore prior state, ALWAYS
+```
+
+Without the reset, one unit's id **leaks into the next** on the same reused
+thread/worker — the exact failure a correlation id is meant to prevent:
+
+```
+msg A (id=aaa) → set → process → [no reset]     contextvar still = aaa
+msg B (id="")  → process                         ← B's logs WRONGLY show aaa
+msg C          → crash before set → ...           ← C's logs WRONGLY show aaa
+```
+
+It's in `finally` so the restore happens even when processing throws — otherwise an
+exception would strand a stale id for the next iteration. This is the same reason the
+edge **middleware** resets after each HTTP request: same primitive, same leak, same
+fix.
+
+### 3.6 Propagating the id across a process boundary
+
+Inside one process, the `ContextVar` carries the id for free. To cross a boundary you
+must **put it on the wire** and **rebind it on the other side**:
+
+| Hop | How the id travels | Where it's rebound |
+|---|---|---|
+| HTTP → service | `X-Correlation-ID` header (edge mints one if absent) | that service's middleware calls `set_correlation_id` |
+| service → service via Kafka | a **`correlation_id` field inside the event** (part of the Avro contract) | the consumer reads `event["correlation_id"]` and calls `set_correlation_id` |
+
+That second row is why Ledgerstream's event schemas carry a `correlation_id` field and
+why each consumer opens with `set_correlation_id(event.get("correlation_id"))` and
+closes with `reset_correlation_id(...)` in a `finally`: a payment that flows
+API → Kafka → Ledger → Kafka → saga keeps **one** id across all four processes, so a
+single log query reconstructs the whole cross-service journey. The `ContextVar` is the
+*in-process* carrier; the header and the event field are the *cross-process* carriers.
+
+> **Interview line:** "The correlation id lives in a `contextvars.ContextVar` so it's
+> isolated per thread/task and auto-injected into every log line without plumbing it
+> through signatures. `set` returns a token; you `reset` in a `finally` so a reused
+> worker thread can't leak one request's id into the next. Across process boundaries
+> it rides an `X-Correlation-ID` header (HTTP) or a `correlation_id` event field
+> (Kafka), and each side rebinds it."
+
 ---
 
 ## 4. OpenTelemetry & the collector pattern

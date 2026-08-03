@@ -121,6 +121,25 @@ def capture_payment(*, tenant_id, payment_id, correlation_id: str = "") -> tuple
     return payment, True
 
 
+@transaction.atomic
+def compensate_payment(*, payment_id, reason: str = "") -> bool:
+    """Saga compensation: the ledger REJECTED this payment → void it.
+
+    Idempotent by state — a redelivered rejection finds it already VOIDED and
+    no-ops. Returns True if it voided now, False if it was already voided/unknown.
+    """
+    payment = Payment.objects.select_for_update().filter(id=payment_id).first()
+    if payment is None or payment.status == Payment.Status.VOIDED:
+        return False
+    payment.status = Payment.Status.VOIDED
+    payment.save(update_fields=["status", "updated_at"])
+    logger.info(
+        "payment compensated (ledger rejected)",
+        extra={"payment_id": str(payment_id), "reason": reason},
+    )
+    return True
+
+
 def capture_payments_batch(*, tenant_id, payment_ids, correlation_id: str = "") -> list[dict]:
     """Capture many payments with PARTIAL-SUCCESS semantics.
 

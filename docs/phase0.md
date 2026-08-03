@@ -245,6 +245,10 @@ service depends on it.
 > shop — which drift and confuse — you keep **one standardized toolbox** everyone
 > uses.
 
+> **Deeper dive:** for the full from-scratch build — `pyproject.toml` section by
+> section, distribution vs import name, extras, editable vs frozen installs, and how
+> to add a module — see [concepts/internal-shared-library.md](concepts/internal-shared-library.md).
+
 ### How this package was created (and the "clutter" around it)
 
 The **source files** were hand-written in Phase 0: `pyproject.toml`, the modules

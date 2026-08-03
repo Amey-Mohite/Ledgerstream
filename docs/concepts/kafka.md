@@ -426,6 +426,124 @@ resuming from committed offsets.**
 
 ---
 
+## 6.5 End-to-end: a record's life, function by function
+
+Sections 4 and 6 covered the producer and consumer separately. This section wires
+them together and names the **actual client calls** — `produce()`, `poll()`,
+`flush()`, `commit()` — so you can trace a record from one app to another and know
+*what each call does and what happens if you crash between them*.
+
+### The calls you actually make (confluent-kafka / librdkafka)
+
+| Side | Call | What it does | Blocking? |
+|---|---|---|---|
+| Producer | `produce(topic, key, value, on_delivery=cb)` | **Enqueues** the record in an in-memory buffer. A background I/O thread batches and sends it. | **No** — returns instantly |
+| Producer | `poll(0)` | Serves delivery callbacks for records already acked. Call it in your loop so `cb`s fire promptly. | No |
+| Producer | `flush()` | **Blocks** until the buffer is empty *and* every `on_delivery` callback has fired. | **Yes** |
+| Consumer | `subscribe([topic])` | Joins a group; triggers a rebalance to get partition assignments. | No |
+| Consumer | `poll(timeout)` | Returns the next record from an assigned partition, or `None` after `timeout`. | Up to `timeout` |
+| Consumer | `commit(msg)` | Stores "processed up to this offset" for **this group** in `__consumer_offsets`. | Yes (sync) / No (async) |
+| Consumer | `close()` | Commits final offsets and leaves the group cleanly (triggers a rebalance). | Yes |
+
+> **The one thing beginners miss:** `produce()` does **not** send anything. It only
+> drops the record into a buffer and returns. The record reaches the broker later,
+> on a background thread. That's why you need `flush()` (or a delivery callback) to
+> *know* it actually landed — and why "did my produce succeed?" is answered by the
+> **callback**, never by `produce()`'s return.
+
+### Flow A — producer → broker → consumer (two separate processes)
+
+The classic decoupled path: one app produces, another (later, elsewhere) consumes.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant PA as Producer app
+  participant PB as Producer buffer<br/>bg I/O thread
+  participant K as Broker<br/>partition leader
+  participant CA as Consumer app
+  participant OF as __consumer_offsets
+
+  Note over PA,K: ── PRODUCE (asynchronous) ──
+  PA->>PB: produce(topic, key, value, on_delivery=cb)
+  Note over PA: returns immediately — record is only QUEUED, not sent
+  PA->>PB: poll(0) — serve delivery callbacks (non-blocking)
+  PB->>K: bg thread batches and sends (acks=all)
+  K-->>PB: ack + assigned offset N
+  PB-->>PA: on_delivery(cb) fires — err=None, offset=N
+  PA->>PB: flush() — BLOCK until queue empty and all callbacks fired
+
+  Note over K: the record now lives durably in the partition at offset N
+
+  Note over CA,OF: ── CONSUME (pull) ──
+  CA->>K: subscribe([topic]) then poll(1.0)
+  K-->>CA: record from an assigned partition (or None on timeout)
+  CA->>CA: process the record (e.g. write to the DB)
+  CA->>OF: commit(msg) — store offset N+1 for THIS group
+  Note over CA: commit AFTER processing = at-least-once
+```
+
+Producer and consumer never talk directly — the broker's log is the buffer between
+them. The producer can be long gone by the time the consumer reads; the record sits
+in the partition until retention (§8) expires.
+
+> **`poll(0)` vs `flush()` (a common confusion):** in a produce loop you call
+> `poll(0)` each iteration to let already-acked callbacks fire *without blocking*;
+> you call `flush()` **once at the end** (or before shutdown) to *block* until
+> everything drains. `poll(0)` = "serve whatever's ready now"; `flush()` = "wait for
+> everything."
+
+### Flow B — consume-process-produce (one worker that is both)
+
+This is the pattern Ledgerstream's Ledger consumer uses: read an event, do work,
+**produce a new event**, then commit — all in one worker. The call **order** is the
+whole correctness argument.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant SRC as Source topic<br/>broker
+  participant W as Worker<br/>consumer + producer
+  participant DB as Database
+  participant OUT as Output topic<br/>broker
+  participant OF as __consumer_offsets
+
+  SRC->>W: msg = consumer.poll(1.0)
+  W->>DB: process(msg) — write rows (idempotent)
+  W->>OUT: producer.produce(out_topic, key, value, on_delivery=cb)
+  Note over W: produce() only ENQUEUES — nothing sent yet
+  W->>OUT: producer.flush()
+  Note over W,OUT: BLOCKS until the new event is delivered and cb has fired
+  OUT-->>W: on_delivery(err=None, offset=M) — delivery confirmed
+  W->>OF: consumer.commit(msg) — store the SOURCE offset LAST
+  Note over W: order is: process → produce → flush → commit
+```
+
+**Why this exact order?** Commit is **last**, only after the downstream event is
+*confirmed delivered* by `flush()`. That single ordering rule is what makes the
+whole step safe to replay:
+
+| Crash point | Source offset committed? | On restart | Net effect |
+|---|---|---|---|
+| after `poll`, before `process` | no | redeliver → process again | fine (idempotent) |
+| after `process`, before `produce` | no | redeliver → process + produce again | fine (idempotent write, re-emit) |
+| after `produce`, before `flush` returns | no | redeliver → maybe the event *was* sent, maybe not | fine — re-emit with the same **deterministic key/id**, downstream dedupes |
+| after `flush`, before `commit` | no | redeliver → reprocess + re-emit | fine — both idempotent, so replay converges |
+| after `commit` | **yes** | resume past it | done, exactly the intended once |
+
+There is **no crash point that loses the event or skips the work** — the cost is
+possible *duplicates*, which idempotency absorbs. That's at-least-once, made correct.
+(If `flush()` reports the delivery **failed**, the worker raises *before* committing,
+so the source offset stays put and the whole step is retried on redelivery.)
+
+> **Interview line:** "`produce()` is async — it only buffers; the delivery callback
+> (or `flush()`) tells you it landed. In a consume-process-produce worker you order
+> the calls process → produce → flush → commit, committing the source offset last, so
+> a crash anywhere redelivers and — because the steps are idempotent — replay
+> converges. Commit-first would be at-most-once and could drop the event."
+
+---
+
 ## 7. Delivery semantics & exactly-once
 
 | Semantic | Meaning | How |

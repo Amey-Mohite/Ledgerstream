@@ -33,6 +33,8 @@ If you're starting cold, read in this order — each builds on the previous:
 16. [Multi-Tenancy & Tenant Isolation](multi-tenancy.md)  *(Phase 1)*
 17. [The Double-Entry Ledger](double-entry-ledger.md)  *(Phase 2)*
 18. [Partitioning & Consistent Hashing](partitioning-and-consistent-hashing.md)  *(Phase 2)*
+19. [Dead-Letter Queues, Retries & Backoff](dlq-and-retries.md)  *(Phase 3)*
+20. [Building an Internal Shared Library](internal-shared-library.md)  *(Phase 0)*
 
 ---
 
@@ -56,7 +58,8 @@ If you're starting cold, read in this order — each builds on the previous:
 | Outbox pattern | [link](outbox-pattern.md) | Payment producer | ✅ written |
 | Idempotency | [link](idempotency.md) | payments + consumers | ✅ written |
 | Partitioning & consistent hashing | [link](partitioning-and-consistent-hashing.md) | Kafka keys, DB sharding | ✅ written |
-| Dead-letter queues & retries/backoff | _phase 3_ | consumer resilience | ⏳ with Phase 3 |
+| Dead-letter queues & retries/backoff | [link](dlq-and-retries.md) | consumer resilience | ✅ written |
+| Internal shared library / Python packaging | [link](internal-shared-library.md) | `libs/shared` | ✅ written |
 | Caching & cache invalidation | _phase 4_ | Redis cache-aside | ⏳ with Phase 4 |
 | Rate limiting & backpressure | _phase 4_ | token bucket | ⏳ with Phase 4 |
 | Circuit breakers & graceful degradation | _phase 4_ | external calls | ⏳ with Phase 4 |
