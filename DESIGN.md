@@ -7,9 +7,11 @@
 > the way it is. It is updated at the end of every phase. Read it top-to-bottom
 > to defend any decision in an interview.
 
-**Status:** Phase 2 complete (event backbone: Avro + Schema Registry, outbox relay
-→ Kafka, Ledger service consuming into an immutable double-entry ledger — verified
-end-to-end: capture → relay → Kafka → consumer → balances).
+**Status:** Phase 3 complete (saga hardening: Ledger emits a `LedgerOutcome`
+(POSTED/REJECTED) on `ledger.events`; Payment saga consumer **compensates** a
+rejected payment to VOIDED, idempotent by state; both consumers get **retry +
+backoff → DLQ** for poison messages — verified end-to-end: GBP payment → captured →
+ledger rejects → compensated to VOIDED).
 
 ---
 
@@ -476,3 +478,71 @@ hashing.md`. Teaching walkthrough: `docs/phase2.md`.
 - **Idempotent producer** (`enable.idempotence`) vs **idempotent consumer** (UNIQUE
   event_id) — two different dedupe mechanisms at two different hops.
 - Stateless service-to-service JWT validation (no shared user store).
+
+### Phase 3 — Saga Hardening (compensation + DLQ) ✅
+**Delivered:** the **failure path** of the Payment→Ledger saga, end to end.
+(1) A new Avro contract `LedgerOutcome` (`schemas/avro/ledger_outcome.avsc`) with a
+`status` field (POSTED/REJECTED) + `reason`, published on `ledger.events`.
+(2) The Ledger consumer now returns `(status, reason)` from `post_payment_captured`
+— it **rejects** an unsupported settlement currency **before writing any journal**
+(deterministic business rule) and otherwise posts as before — then **emits the
+outcome inside the same consume-process-produce unit**, committing the offset
+**last** (no outbox needed: the source is replayable Kafka, and both the journal
+and the outcome are idempotent, so replay converges). The outcome's `event_id` is
+deterministic (`"outcome:" + source event_id`) so the saga dedupes it.
+(3) A **Payment saga consumer** (group `payment-saga`, new `consumer` app) reads
+`ledger.events` and on REJECTED runs the **compensating action** `compensate_payment`
+→ payment VOIDED, **idempotent by state** (already-VOIDED redelivery is a no-op; no
+dedupe table). POSTED is a no-op (payment already CAPTURED).
+(4) **DLQ + retry/backoff** on both consumers: a shared `run_with_retry`
+(3 tries, exponential backoff from 0.5s) wraps processing; on exhaustion — or an
+undeserializable (poison) message — the **raw bytes** are produced to a DLQ
+(`payments.events.dlq` / `ledger.events.dlq`) and the offset is committed, so one
+bad message can't block the partition. **Verified live** against Neon + real Kafka:
+a **GBP** payment → captured → relay → Kafka → ledger **rejects** (no journal) →
+`LedgerOutcome{REJECTED}` → saga → payment **VOIDED**. Tests: Payment 13 (+saga
+compensation idempotency), Ledger 5 (+GBP rejection writes no journal), shared 3
+(retry succeeds/retries/exhausts).
+
+**Skills checked off:** **saga pattern** (choreography) with a real **compensating
+transaction** · **state-based idempotent compensation** (no dedupe table) ·
+**consume-process-produce** without an outbox (Kafka source is replayable) ·
+deterministic business rejection + **reason propagation** · **DLQ** + **retry with
+exponential backoff** · poison-message handling (deserialize failure → DLQ) ·
+second consumer group in a second service · correlation-id carried through the
+outcome event.
+
+**Concept docs written:** `dlq-and-retries.md`; `saga-pattern.md` updated to the
+real `LedgerOutcome{status}` shape. Teaching walkthrough: `docs/phase3.md`.
+
+**Decisions & trade-offs:**
+- **One `LedgerOutcome{status}` event, not two types** (`LedgerPosted` /
+  `LedgerRejected`) — one contract, one topic, one schema to evolve; the saga
+  branches on `status`. Simpler than two subjects for a binary outcome.
+- **No outbox on the Ledger side** — the outbox exists to atomically publish an
+  event that originated from a **non-replayable** source (an API write). The
+  Ledger's source is Kafka (**replayable**): post journal → produce outcome →
+  commit offset **last**; a crash before the commit redelivers, and both steps are
+  idempotent, so replay converges. Adding an outbox here would be cargo-culting.
+- **Compensation is idempotent by state, not by a dedupe table** — voiding a
+  CAPTURED payment and no-oping if already VOIDED means redeliveries are free; the
+  payment row itself is the dedupe key. Cheaper than an inbox table.
+- **Rejection happens before any journal write** — so a REJECTED payment leaves the
+  ledger untouched (no reversing entry needed). If a rejection could occur *after*
+  posting, compensation would be a **reversing entry**, never a delete (ledger is
+  immutable).
+- **DLQ-on-exhaustion trades consistency for availability** — a valid event
+  dead-lettered during a prolonged DB outage isn't posted until someone replays the
+  DLQ. Accepted **with** the caveat that redrive tooling + DLQ-depth alerting are
+  production follow-ups (Tier 2). The alternative (block the partition until the DB
+  recovers) trades the other way; noted in `dlq-and-retries.md §4`.
+- **`SUPPORTED_CURRENCIES = {USD, EUR}` is a demo business rule** (`# ponytail`) —
+  a concrete, deterministic reason for the ledger to reject, so the failure path is
+  demonstrable without contriving an infra fault.
+
+**Scaffolded — be ready to explain (may not fully grasp yet):**
+- Why the Ledger needs **no outbox** but the Payment API did (replayable vs not).
+- **Exponential backoff + jitter** and why a tight retry loop is a retry storm.
+- Why a **poison message head-of-line-blocks** a partition, and how DLQ+commit frees it.
+- Retry safety depends on **idempotency** (at-least-once means a retried handler
+  can run its side effect twice).

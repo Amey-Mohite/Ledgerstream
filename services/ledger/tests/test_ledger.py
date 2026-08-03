@@ -12,7 +12,7 @@ def test_posts_a_balanced_double_entry(make_event):
     from ledger.services import post_payment_captured
 
     event = make_event(amount_minor=500, currency="USD")
-    assert post_payment_captured(event) is True
+    assert post_payment_captured(event) == ("POSTED", "")
 
     entry = JournalEntry.objects.get(event_id=event["event_id"])
     lines = list(entry.lines.all())
@@ -31,10 +31,10 @@ def test_consuming_the_same_event_twice_is_idempotent(make_event):
     from ledger.services import post_payment_captured
 
     event = make_event()
-    assert post_payment_captured(event) is True     # first time: posts
-    assert post_payment_captured(event) is False    # duplicate: no-op
+    assert post_payment_captured(event)[0] == "POSTED"   # first time: posts
+    assert post_payment_captured(event)[0] == "POSTED"   # duplicate: same outcome
 
-    assert JournalEntry.objects.filter(event_id=event["event_id"]).count() == 1
+    assert JournalEntry.objects.filter(event_id=event["event_id"]).count() == 1  # one entry
 
 
 def test_balances_are_derived_and_tenant_scoped(auth_client, make_event):
@@ -48,6 +48,18 @@ def test_balances_are_derived_and_tenant_scoped(auth_client, make_event):
     # Cash is debit-normal → +500; payable is credit-normal → -500 (in debit terms).
     assert by_code["CASH"]["balance"] == 500
     assert by_code["MERCHANT_PAYABLE"]["balance"] == -500
+
+
+def test_unsupported_currency_is_rejected_without_a_journal(make_event):
+    from ledger.models import JournalEntry
+    from ledger.services import post_payment_captured
+
+    event = make_event(currency="GBP")   # not in SUPPORTED_CURRENCIES
+    status, reason = post_payment_captured(event)
+
+    assert status == "REJECTED"
+    assert "GBP" in reason
+    assert not JournalEntry.objects.filter(event_id=event["event_id"]).exists()   # no journal
 
 
 def test_read_api_requires_auth(api_client):

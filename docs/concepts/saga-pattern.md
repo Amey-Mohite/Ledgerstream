@@ -176,17 +176,25 @@ so you rarely have to "undo the un-undoable."
 
 ## 5. A worked example (Payment → Ledger)
 
+> **Implementation note:** Ledgerstream emits a **single** `LedgerOutcome` event
+> carrying a `status` field (`POSTED` | `REJECTED`) rather than two separate event
+> types. One contract, one topic (`ledger.events`); the saga consumer branches on
+> `status`. Below, "LedgerPosted / LedgerRejected" = `LedgerOutcome{POSTED}` /
+> `LedgerOutcome{REJECTED}`.
+
 **Happy path:**
 1. `T1` Payment: mark payment `CAPTURED`, write outbox event `PaymentCaptured`.
 2. `T2` Ledger: consume it, post a **balanced double-entry** (debit + credit),
-   emit `LedgerPosted`.
-3. Payment consumes `LedgerPosted` → saga **complete**.
+   emit `LedgerOutcome{POSTED}`.
+3. Payment consumes it → the payment is already `CAPTURED`, so this is a **no-op**;
+   the saga is **complete**.
 
-**Failure path (ledger rejects — e.g. account closed):**
+**Failure path (ledger rejects — e.g. unsupported settlement currency):**
 1. `T1` succeeds (payment CAPTURED).
-2. `T2` fails → Ledger emits `LedgerRejected`.
-3. Payment runs **`C1`**: compensate by voiding/refunding — move the payment to
-   `FAILED`/`REVERSED`. (If the ledger had partially posted, its compensation is a
+2. `T2` rejects **before writing any journal** → Ledger emits `LedgerOutcome{REJECTED}`.
+3. Payment runs **`C1`**: compensate by voiding — move the payment to `VOIDED`,
+   idempotent by state (a redelivered rejection finds it already `VOIDED` and
+   no-ops). (If the ledger *had* posted a journal, its compensation would be a
    **reversing entry**, never a delete — the ledger is immutable.)
 
 End state is consistent: no captured-but-unrecorded money. It passed through a
@@ -200,12 +208,12 @@ sequenceDiagram
   PAY->>BUS: PaymentCaptured (via outbox)
   BUS->>LED: PaymentCaptured
   alt ledger posts OK
-    LED->>BUS: LedgerPosted
-    BUS->>PAY: LedgerPosted → DONE
+    LED->>BUS: LedgerOutcome{POSTED}
+    BUS->>PAY: LedgerOutcome{POSTED} → no-op, DONE
   else ledger rejects
-    LED->>BUS: LedgerRejected
-    BUS->>PAY: LedgerRejected
-    PAY->>PAY: compensate → void/reverse payment
+    LED->>BUS: LedgerOutcome{REJECTED}
+    BUS->>PAY: LedgerOutcome{REJECTED}
+    PAY->>PAY: compensate → VOID payment (idempotent)
   end
 ```
 
@@ -241,10 +249,11 @@ sequenceDiagram
 
 The Payment → Ledger flow is a **choreography-based saga** (few steps, naturally
 event-driven): Payment publishes `PaymentCaptured` (atomically via the **outbox**),
-Ledger posts the immutable double-entry and replies with `LedgerPosted` /
-`LedgerRejected`, and Payment runs a **compensating action** on rejection. Every
-step is an **idempotent** consumer (at-least-once delivery), failed events go to a
-**DLQ** with retries/backoff, and the ledger compensation is a **reversing entry**,
-never a delete. We choose choreography over orchestration deliberately because the
+Ledger posts the immutable double-entry and replies with a single `LedgerOutcome`
+event carrying `status` = `POSTED` / `REJECTED`, and Payment runs a **compensating
+action** (VOID) on rejection. Every step is an **idempotent** consumer
+(at-least-once delivery), failed events go to a **DLQ** with
+[retries/backoff](dlq-and-retries.md), and the ledger compensation would be a
+**reversing entry**, never a delete. We choose choreography over orchestration deliberately because the
 flow is short; `DESIGN.md` notes we'd move to an orchestrator if the workflow grew
 more steps. Built in **Phase 3**.

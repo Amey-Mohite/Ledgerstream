@@ -32,23 +32,32 @@ def _assert_balanced(entry: JournalEntry) -> None:
         raise ValueError(f"Unbalanced entry {entry.id}: debits={debits} credits={credits}")
 
 
+# ponytail: demo business rule — the ledger only settles these currencies. Gives
+# the saga a REJECTED path to exercise. Real rule would be account-status/limits.
+SUPPORTED_CURRENCIES = {"USD", "EUR"}
+
+
 @transaction.atomic
-def post_payment_captured(event: dict) -> bool:
-    """Post the double-entry for a PaymentCaptured event.
+def post_payment_captured(event: dict) -> tuple[str, str]:
+    """Handle a PaymentCaptured. Returns (status, reason):
 
-    Returns True if a new entry was posted, False if this event was already
-    processed (idempotent no-op).
+      POSTED   -> balanced double-entry written (idempotent on event_id).
+      REJECTED -> a ledger business rule failed; NO journal written.
+
+    Deterministic: same event -> same outcome, so Kafka redeliveries are safe to
+    replay (the caller re-emits the same LedgerOutcome; downstream dedupes).
     """
-    event_id = event["event_id"]
+    currency = event["currency"]
+    if currency not in SUPPORTED_CURRENCIES:
+        return "REJECTED", f"unsupported settlement currency: {currency}"
 
-    # Fast-path idempotency check.
+    event_id = event["event_id"]
+    # Fast-path idempotency: already posted -> still POSTED, don't double-write.
     if JournalEntry.objects.filter(event_id=event_id).exists():
-        logger.info("duplicate event ignored", extra={"event_id": str(event_id)})
-        return False
+        return "POSTED", ""
 
     tenant_id = event["tenant_id"]
     amount = event["amount_minor"]
-    currency = event["currency"]
 
     cash = _get_account(tenant_id, "CASH", Account.Type.ASSET)
     payable = _get_account(tenant_id, "MERCHANT_PAYABLE", Account.Type.LIABILITY)
@@ -63,8 +72,7 @@ def post_payment_captured(event: dict) -> bool:
         )
     except IntegrityError:
         # Another consumer instance posted this event first.
-        logger.info("event already posted (race)", extra={"event_id": str(event_id)})
-        return False
+        return "POSTED", ""
 
     # The double entry: debits == credits.
     LedgerLine.objects.create(
@@ -81,4 +89,4 @@ def post_payment_captured(event: dict) -> bool:
         "posted double-entry",
         extra={"event_id": str(event_id), "tenant_id": str(tenant_id), "amount_minor": amount},
     )
-    return True
+    return "POSTED", ""

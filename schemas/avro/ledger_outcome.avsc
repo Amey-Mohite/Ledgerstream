@@ -1,0 +1,15 @@
+{
+  "type": "record",
+  "name": "LedgerOutcome",
+  "namespace": "com.ledgerstream.ledger",
+  "doc": "Emitted by the Ledger after handling a PaymentCaptured: POSTED (journal written) or REJECTED (business rule failed). The Payment saga consumes this and compensates on REJECTED. event_id is deterministic from the source event so redeliveries dedupe.",
+  "fields": [
+    { "name": "event_id", "type": "string" },
+    { "name": "occurred_at", "type": { "type": "long", "logicalType": "timestamp-millis" } },
+    { "name": "correlation_id", "type": "string", "default": "" },
+    { "name": "tenant_id", "type": "string" },
+    { "name": "payment_id", "type": "string" },
+    { "name": "status", "type": "string", "doc": "POSTED | REJECTED" },
+    { "name": "reason", "type": "string", "default": "" }
+  ]
+}

@@ -19,6 +19,7 @@
 #   - For the ledger to show data, ALSO run the workers (each in its own terminal):
 #       cd services/payment && python manage.py run_outbox_relay
 #       cd services/ledger  && python manage.py consume_payments
+#       cd services/payment && python manage.py consume_ledger_outcomes   # saga (step 9)
 #   - A user exists (default smoke/smokepw123). Create one with:
 #       cd services/payment && python manage.py create_tenant --name T --username you --password pw
 
@@ -95,5 +96,27 @@ step "8. Refresh the access token (no re-login)"
 curl -s -X POST "$PAY_URL/api/auth/token/refresh" \
   -H "Content-Type: application/json" \
   -d "{\"refresh\":\"$REFRESH\"}" | json "['access'][:40]" | sed 's/^/new access (first 40): /'
+
+step "9. Saga failure path — GBP payment → ledger REJECTS → auto-VOID (Phase 3)"
+echo "(needs the saga consumer running: python manage.py consume_ledger_outcomes)"
+GKEY="gbp-$$-$RANDOM"
+GID=$(curl -s -X POST "$PAY_URL/api/payments" "${AUTH[@]}" \
+  -H "Idempotency-Key: $GKEY" -H "Content-Type: application/json" \
+  -d '{"amount_minor":700,"currency":"gbp","reference":"saga-demo"}' | json "['id']")
+echo "→ created GBP payment $GID (currency unsupported by the ledger)"
+curl -s -o /dev/null -X POST "$PAY_URL/api/payments/$GID/capture" "${AUTH[@]}"
+echo "→ captured; waiting for the ledger to reject + the saga to compensate..."
+ST=""
+for _ in $(seq 1 20); do
+  ST=$(curl -s "$PAY_URL/api/payments/$GID" "${AUTH[@]}" | json "['status']")
+  [ "$ST" = "VOIDED" ] && break
+  echo -n "."; sleep 1
+done
+echo
+if [ "$ST" = "VOIDED" ]; then
+  echo "✅ payment auto-VOIDED by saga compensation (ledger rejected GBP)."
+else
+  echo "⚠️  status is '$ST', not VOIDED — is the saga consumer (terminal 4) running?"
+fi
 
 echo; hr; echo "✅ smoke flow complete."; hr

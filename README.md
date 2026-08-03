@@ -28,15 +28,16 @@ double-entry ledger, per-tenant isolation, and full observability.
 | **P0** | Foundation: infra stack + shared observability lib | ✅ |
 | **P1** | **Payment service** — multi-tenant, JWT, idempotency, outbox, health | ✅ |
 | **P2** | **Event backbone** — Avro + Schema Registry, outbox relay → Kafka, **Ledger service** consuming into an immutable double-entry ledger | ✅ |
-| **P3** | Saga hardening — DLQ, retries/backoff, compensation → **MVP** | ⏳ next |
-| P4 | Gateway + resilience (rate limit, Redis cache, circuit breaker) | |
+| **P3** | **Saga hardening** — Ledger emits `LedgerOutcome`, Payment **compensates** rejected payments (→ VOIDED), **retries/backoff + DLQ** on both consumers → **MVP** | ✅ |
+| P4 | Gateway + resilience (rate limit, Redis cache, circuit breaker) | ⏳ next |
 | P5 | Proof tests + seed + load test | |
 | P6 | AI Query service (RAG/MCP + LLM gateway) | |
 | P7 | k8s / Helm / Terraform / CI | |
 
-Verified end-to-end against real cloud DBs (Neon) + Kafka: capture → outbox →
-relay (Avro) → Kafka → consumer → balanced double-entry → balances API. Tests:
-Payment **12**, Ledger **4**.
+Verified end-to-end against real cloud DBs (Neon) + Kafka: happy path (capture →
+outbox → relay → Kafka → consumer → balanced double-entry → balances API) **and**
+the saga failure path (GBP payment → ledger rejects → `LedgerOutcome{REJECTED}` →
+saga consumer → payment **VOIDED**). Tests: Payment **13**, Ledger **5**, shared **3**.
 
 ---
 
@@ -51,8 +52,11 @@ Payment **12**, Ledger **4**.
                           ▼                                        │  UNIQUE event_id)
                    Outbox Relay ──Avro──► Kafka: payments.events ──► Ledger Consumer
                    (worker, SKIP LOCKED)  + Schema Registry          (worker, consumer group)
-                          │                                        │
+                          │                                        │ post journal, OR reject
                  postgres-payment (Neon)                    postgres-ledger (Neon)
+                          ▲                                        │
+        Saga Consumer ◄──── Kafka: ledger.events ◄──────── LedgerOutcome{POSTED|REJECTED}
+        (compensate → VOID on REJECTED)     both consumers: retry+backoff → DLQ on poison
 
    Cross-cutting: OTel Collector → Jaeger + Prometheus · correlation-id propagated across services
    Auth: shared JWT signing key → Ledger validates statelessly (service-to-service trust)

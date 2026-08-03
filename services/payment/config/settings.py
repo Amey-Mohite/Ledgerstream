@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     "tenants",
     "payments",
     "outbox",
+    "consumer",   # saga consumer command (no models)
 ]
 
 MIDDLEWARE = [
