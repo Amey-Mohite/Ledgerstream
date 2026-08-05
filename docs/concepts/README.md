@@ -13,6 +13,9 @@ short note at the end of each; the bulk is knowledge you can carry anywhere.
 
 ## Reading order (foundations first)
 
+> **New to auth?** Read [Authentication, JWTs & Multi-Tenancy](authentication-and-jwt.md)
+> first — it explains tokens, the login flow, and what a "tenant" is, from scratch.
+
 If you're starting cold, read in this order — each builds on the previous:
 
 1. [Microservices & Database-per-Service](microservices-and-database-per-service.md)
@@ -35,6 +38,10 @@ If you're starting cold, read in this order — each builds on the previous:
 18. [Partitioning & Consistent Hashing](partitioning-and-consistent-hashing.md)  *(Phase 2)*
 19. [Dead-Letter Queues, Retries & Backoff](dlq-and-retries.md)  *(Phase 3)*
 20. [Building an Internal Shared Library](internal-shared-library.md)  *(Phase 0)*
+21. [Rate Limiting & Backpressure](rate-limiting.md)  *(Phase 4)*
+22. [Caching & Cache Invalidation](caching-and-invalidation.md)  *(Phase 4)*
+23. [Circuit Breakers & Graceful Degradation](circuit-breakers.md)  *(Phase 4)*
+24. [Cursor (Keyset) Pagination](cursor-pagination.md)  *(Phase 4)*
 
 ---
 
@@ -60,11 +67,12 @@ If you're starting cold, read in this order — each builds on the previous:
 | Partitioning & consistent hashing | [link](partitioning-and-consistent-hashing.md) | Kafka keys, DB sharding | ✅ written |
 | Dead-letter queues & retries/backoff | [link](dlq-and-retries.md) | consumer resilience | ✅ written |
 | Internal shared library / Python packaging | [link](internal-shared-library.md) | `libs/shared` | ✅ written |
-| Caching & cache invalidation | _phase 4_ | Redis cache-aside | ⏳ with Phase 4 |
-| Rate limiting & backpressure | _phase 4_ | token bucket | ⏳ with Phase 4 |
-| Circuit breakers & graceful degradation | _phase 4_ | external calls | ⏳ with Phase 4 |
-| Cursor pagination | _phase 4_ | history APIs | ⏳ with Phase 4 |
+| Caching & cache invalidation | [link](caching-and-invalidation.md) | gateway Redis cache-aside | ✅ written |
+| Rate limiting & backpressure | [link](rate-limiting.md) | gateway token bucket | ✅ written |
+| Circuit breakers & graceful degradation | [link](circuit-breakers.md) | gateway → backends | ✅ written |
+| Cursor pagination | [link](cursor-pagination.md) | ledger history API | ✅ written |
 | Double-entry ledger / event sourcing ideas | [link](double-entry-ledger.md) | ledger core | ✅ written |
+| Authentication, JWTs & tenancy | [link](authentication-and-jwt.md) | login + every request | ✅ written |
 | Multi-tenancy & isolation | [link](multi-tenancy.md) | every data access | ✅ written |
 | RAG / LLM gateway / AI guardrails | _phase 6_ | AI Query service | ⏳ with Phase 6 |
 

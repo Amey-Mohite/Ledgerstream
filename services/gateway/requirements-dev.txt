@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest>=8.0
+pytest-django>=4.9
+fakeredis[lua]>=2.23        # in-memory Lua-capable Redis for hermetic rate-limit tests
