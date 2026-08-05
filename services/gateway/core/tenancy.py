@@ -1,4 +1,8 @@
-"""Tenant resolution from the validated JWT (same rule as Payment)."""
+"""Tenant resolution from the validated JWT (same rule as Payment/Ledger).
+
+The gateway reads `tenant_id` from the verified token to key per-tenant rate limits
+and cache entries — never from a client-supplied header (which could be forged).
+"""
 
 from __future__ import annotations
 

@@ -1,0 +1,12 @@
+# Gateway service — runtime dependencies.
+# NOTE: no psycopg / dj-database-url — the gateway is stateless (no Postgres).
+Django>=5.1,<5.2
+djangorestframework>=3.15
+djangorestframework-simplejwt>=5.3        # edge JWT validation (shared key)
+httpx>=0.27                                # reverse-proxy client to backends
+redis>=5.0                                 # rate-limit counters + cache-aside
+gunicorn>=22.0                             # production WSGI server
+python-dotenv>=1.0                         # load .env for native local dev
+
+# Shared observability library (installed separately, editable):
+#   pip install -e ../../libs/shared

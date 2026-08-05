@@ -29,15 +29,17 @@ double-entry ledger, per-tenant isolation, and full observability.
 | **P1** | **Payment service** — multi-tenant, JWT, idempotency, outbox, health | ✅ |
 | **P2** | **Event backbone** — Avro + Schema Registry, outbox relay → Kafka, **Ledger service** consuming into an immutable double-entry ledger | ✅ |
 | **P3** | **Saga hardening** — Ledger emits `LedgerOutcome`, Payment **compensates** rejected payments (→ VOIDED), **retries/backoff + DLQ** on both consumers → **MVP** | ✅ |
-| P4 | Gateway + resilience (rate limit, Redis cache, circuit breaker) | ⏳ next |
-| P5 | Proof tests + seed + load test | |
+| **P4** | **API gateway** (stateless) — edge JWT + reverse proxy, **token-bucket rate limiting**, **Redis cache-aside**, **circuit breaker**, **cursor pagination** | ✅ |
+| P5 | Proof tests + seed + load test | ⏳ next |
 | P6 | AI Query service (RAG/MCP + LLM gateway) | |
 | P7 | k8s / Helm / Terraform / CI | |
 
 Verified end-to-end against real cloud DBs (Neon) + Kafka: happy path (capture →
 outbox → relay → Kafka → consumer → balanced double-entry → balances API) **and**
 the saga failure path (GBP payment → ledger rejects → `LedgerOutcome{REJECTED}` →
-saga consumer → payment **VOIDED**). Tests: Payment **13**, Ledger **5**, shared **3**.
+saga consumer → payment **VOIDED**). The **gateway** fronts it all with edge auth,
+rate limiting, caching, and a circuit breaker. Tests: Payment **13**, Ledger **5**,
+Gateway **12**, shared **3**.
 
 ---
 
@@ -45,6 +47,10 @@ saga consumer → payment **VOIDED**). Tests: Payment **13**, Ledger **5**, shar
 
 ```
                     POST /api/auth/token → JWT (carries tenant_id claim)
+   Client ─►  API Gateway :8010 (Django, stateless, Redis) ──httpx──► services below
+              edge JWT · token-bucket rate limit · balances cache-aside · circuit breaker · cursor history
+                                     │  (one JWT works on every hop; correlation-id originates here)
+                                     ▼
    Client ─────►  Payment service (Django/DRF)            Ledger service (Django/DRF)
                     authorize → capture                     GET balances / transactions (read)
                           │                                        ▲

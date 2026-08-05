@@ -7,11 +7,16 @@
 > the way it is. It is updated at the end of every phase. Read it top-to-bottom
 > to defend any decision in an interview.
 
-**Status:** Phase 3 complete (saga hardening: Ledger emits a `LedgerOutcome`
-(POSTED/REJECTED) on `ledger.events`; Payment saga consumer **compensates** a
-rejected payment to VOIDED, idempotent by state; both consumers get **retry +
-backoff → DLQ** for poison messages — verified end-to-end: GBP payment → captured →
-ledger rejects → compensated to VOIDED).
+**Status:** Phase 4 complete (API **gateway** — stateless, DB-less — fronts
+Payment/Ledger with edge JWT auth + reverse proxy, plus four resilience patterns:
+**token-bucket rate limiting** (Redis, `429`), **cache-aside** on balances (Redis,
+TTL + invalidate-on-write), a per-service **circuit breaker** (fail-fast → `503`),
+and **cursor pagination** on the ledger history. Gateway 12 tests green; token bucket
+verified live on Upstash Redis).
+
+_(Prior — Phase 3: saga hardening — Ledger emits `LedgerOutcome`(POSTED/REJECTED);
+Payment saga consumer compensates a rejected payment to VOIDED, idempotent by state;
+both consumers get retry+backoff → DLQ. Verified: GBP payment → rejected → VOIDED.)_
 
 ---
 
@@ -546,3 +551,67 @@ real `LedgerOutcome{status}` shape. Teaching walkthrough: `docs/phase3.md`.
 - Why a **poison message head-of-line-blocks** a partition, and how DLQ+commit frees it.
 - Retry safety depends on **idempotency** (at-least-once means a retried handler
   can run its side effect twice).
+
+### Phase 4 — API Gateway + Resilience ✅
+**Delivered:** a new **`gateway`** service (Django+DRF) — the single public entry
+point — that is **stateless and DB-less** (`DATABASES = {}`; its only store is Redis).
+It authenticates at the **edge** (stateless JWT, shared key — reject bad traffic before
+a backend is touched) and **reverse-proxies** to Payment/Ledger over `httpx`
+(transparent: method/path/query/body + correlation-id forwarded). Four resilience
+patterns layer onto one `ProxyView`:
+(1) **Rate limiting** — a **token bucket in Redis via an atomic Lua script** (no
+read-modify-write race), keyed per-tenant (auth) / per-IP (login), over-budget →
+`429 + Retry-After`.
+(2) **Cache-aside** — balances cached per tenant (`SET … EX`, TTL bounded staleness) +
+**invalidate-on-write** (a capture drops the tenant's balances key); `X-Cache: HIT/MISS`.
+(3) **Circuit breaker** — hand-rolled, **per-service** (closed→open→half-open); 5xx /
+timeouts trip it, **4xx does not**; open → **fail-fast `503`** (graceful degradation).
+(4) **Cursor pagination** — the ledger history (`GET /api/transactions`) uses DRF
+`CursorPagination` (keyset on `-created_at`) — flat cost + stable under head inserts.
+Readiness checks **Redis, not downstreams** (a gateway stays ready when a backend is
+down — the breaker's job). **Gateway 12 tests** (edge-auth gate, routing, 429 + real
+token-bucket Lua via fakeredis, cache HIT/invalidate, breaker state machine + 503).
+Token bucket additionally **verified live on Upstash** Redis.
+
+**Skills checked off:** API **gateway / BFF** · **edge authentication** + defense in
+depth · **token-bucket rate limiting** (atomic Redis Lua) + **backpressure** (`429`
+Retry-After) · **cache-aside** + **TTL/invalidation** (per-tenant) · **circuit breaker**
++ **graceful degradation** (`503`) · **cursor/keyset pagination** · stateless service
+(no DB) · correlation-id origination at the edge.
+
+**Concept docs written:** `rate-limiting.md`, `caching-and-invalidation.md`,
+`circuit-breakers.md`, `cursor-pagination.md`. Teaching walkthrough: `docs/phase4.md`.
+
+**Decisions & trade-offs:**
+- **Gateway owns no database** (`DATABASES = {}`) — a stateless router holds no business
+  state; state lives in the services + Redis. Makes "stateless edge" explicit and keeps
+  the image tiny (no psycopg).
+- **Rate limit as a Lua script, not GET/SET** — the read-refill-spend must be atomic or
+  concurrent requests both spend the last token; Lua runs it server-side in one step.
+  Shared Redis state means the limit holds across gateway **replicas** (in-memory would
+  give N× the limit).
+- **Token bucket over fixed window** — allows a bounded burst + smooth sustained rate,
+  no fixed-window edge-doubling.
+- **Cache TTL *and* invalidate-on-write** — TTL bounds staleness with zero coordination;
+  invalidation tightens freshness on known writes; together they cover missed paths.
+  Honest: balances are eventually consistent (ledger consumer), so invalidation gives a
+  fresh *read of the ledger*, not a guarantee the just-captured payment is posted.
+- **4xx must not trip the breaker** — a client error isn't a backend fault; only
+  5xx/timeouts/connection errors count, else bad input could take a backend offline.
+- **In-process breaker state** — per-instance is the standard design (local health
+  signal); a Redis-shared breaker adds coordination cost rarely worth it. (`# ponytail`)
+- **Redis is TLS-only on Upstash** — `.env` `REDIS_URL` must be `rediss://` (double-s);
+  plain `redis://` gets the connection closed by the server. (Same class as the earlier
+  Kafka host-listener fix.)
+- **Cursor pagination lives in the backend**, not the gateway (the gateway forwards
+  `?cursor=`); the `next`/`previous` URLs point at the backend host — prod would rewrite
+  them via forwarded-host headers.
+
+**Scaffolded — be ready to explain (may not fully grasp yet):**
+- Why the gateway needs **no DB** but the backends do (stateless router vs stateful svc).
+- Why the rate-limit check must be **atomic** (Lua) and why shared state matters across
+  replicas.
+- Why **readiness excludes downstreams** (stay in the LB; the breaker handles a dead
+  backend).
+- Why a **4xx doesn't** trip the breaker but a **5xx/timeout does**.
+- OFFSET vs **keyset** pagination (deep-page cost + insert stability).

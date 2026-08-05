@@ -8,6 +8,7 @@ validated JWT.
 from __future__ import annotations
 
 from django.db.models import Q, Sum
+from rest_framework.pagination import CursorPagination
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -16,6 +17,23 @@ from core.tenancy import require_tenant_id
 
 from .models import Account, JournalEntry
 from .serializers import JournalEntrySerializer
+
+
+class TransactionCursorPagination(CursorPagination):
+    """Keyset (cursor) pagination over the append-only history.
+
+    Cursor pagination pages by a **position value** (here `created_at`), not by an
+    OFFSET. Why it beats `?page=N`/LIMIT-OFFSET for a large, growing feed:
+      * O(1) per page — the DB seeks by an indexed key (`WHERE created_at < ?`)
+        instead of counting past N rows (OFFSET N scans and discards N rows).
+      * **Stable under inserts** — new entries arriving at the head don't shift
+        rows onto the page you already read (the classic offset "duplicate/skip"
+        bug), because the cursor is anchored to a value, not a count.
+    The trade-off: no random "jump to page 500" — you can only go next/previous.
+    """
+
+    page_size = 25
+    ordering = "-created_at"      # newest first; the keyset field (indexed)
 
 
 class BalancesView(APIView):
@@ -48,6 +66,10 @@ class TransactionsView(APIView):
         entries = (
             JournalEntry.objects.filter(tenant_id=tenant_id)
             .prefetch_related("lines__account")
-            .order_by("-created_at")[:100]
+            .order_by("-created_at")
         )
-        return Response(JournalEntrySerializer(entries, many=True).data)
+        paginator = TransactionCursorPagination()
+        page = paginator.paginate_queryset(entries, request, view=self)
+        data = JournalEntrySerializer(page, many=True).data
+        # → {"next": <cursor url>, "previous": <cursor url>, "results": [...]}
+        return paginator.get_paginated_response(data)
