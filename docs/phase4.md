@@ -250,10 +250,15 @@ cd services/ledger  && python manage.py runserver 127.0.0.1:8021
 cd services/gateway && python manage.py runserver 127.0.0.1:8010
 ```
 
-Then drive everything **through the gateway** (`scripts/smoke.sh` with `PAY_URL` pointed
-at `:8010`): login → create/capture → balances (watch `X-Cache: MISS` then `HIT`) →
-transactions (cursor-paginated). Rate limits, caching, and the breaker all apply at the
-edge. Redis is your Upstash instance (`REDIS_URL` uses `rediss://` — Upstash is TLS-only).
+Then drive everything **through the gateway** with **`scripts/smoke_gateway.sh`**:
+login → create/capture → balances (watch `X-Cache: MISS` then `HIT`) → cursor-paginated
+transactions → the GBP saga (auto-VOID) → a rate-limit burst (200s then `429`s). Rate
+limits, caching, and the breaker all apply at the edge. Redis is your Upstash instance
+(`REDIS_URL` uses `rediss://` — Upstash is TLS-only).
+
+```bash
+bash scripts/smoke_gateway.sh
+```
 
 ---
 
