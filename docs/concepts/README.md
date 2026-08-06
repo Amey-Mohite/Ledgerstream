@@ -43,6 +43,9 @@ If you're starting cold, read in this order — each builds on the previous:
 23. [Circuit Breakers & Graceful Degradation](circuit-breakers.md)  *(Phase 4)*
 24. [Cursor (Keyset) Pagination](cursor-pagination.md)  *(Phase 4)*
 25. [Load Testing & Performance](load-testing-and-performance.md)  *(Phase 5)*
+26. [The LLM Gateway](llm-gateway.md)  *(Phase 6)*
+27. [Grounding: Tool Use, RAG & MCP](rag-tools-mcp.md)  *(Phase 6)*
+28. [AI Guardrails](ai-guardrails.md)  *(Phase 6)*
 
 ---
 
@@ -76,7 +79,9 @@ If you're starting cold, read in this order — each builds on the previous:
 | Double-entry ledger / event sourcing ideas | [link](double-entry-ledger.md) | ledger core | ✅ written |
 | Authentication, JWTs & tenancy | [link](authentication-and-jwt.md) | login + every request | ✅ written |
 | Multi-tenancy & isolation | [link](multi-tenancy.md) | every data access | ✅ written |
-| RAG / LLM gateway / AI guardrails | _phase 6_ | AI Query service | ⏳ with Phase 6 |
+| LLM gateway (multi-provider) | [link](llm-gateway.md) | AI Query service | ✅ written |
+| Grounding: tool use / RAG / MCP | [link](rag-tools-mcp.md) | AI Query tools + MCP | ✅ written |
+| AI guardrails | [link](ai-guardrails.md) | AI Query service | ✅ written |
 
 **Forward references you may hit early in DESIGN.md** (teasers until their full
 file lands):

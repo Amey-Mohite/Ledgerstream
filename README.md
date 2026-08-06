@@ -15,11 +15,13 @@ double-entry ledger, per-tenant isolation, and full observability.
 > **New to this stack? Two learning tracks in [`docs/`](docs/):**
 > - **Per-phase walkthroughs** — every file explained from scratch:
 >   [phase0](docs/phase0.md) · [phase1](docs/phase1.md) · [phase2](docs/phase2.md) ·
->   [phase3](docs/phase3.md) · [phase4](docs/phase4.md) · [phase5](docs/phase5.md)
+>   [phase3](docs/phase3.md) · [phase4](docs/phase4.md) · [phase5](docs/phase5.md) ·
+>   [phase6](docs/phase6.md)
 > - **[System-design handbook](docs/concepts/)** — Kafka, outbox, idempotency,
->   double-entry ledger, CAP/PACELC, schema evolution, consumer scaling, **auth/JWT,
->   rate limiting, caching, circuit breakers, cursor pagination**… written to
->   interview depth with diagrams, code, and plain-English analogies.
+>   double-entry ledger, CAP/PACELC, schema evolution, consumer scaling, auth/JWT,
+>   rate limiting, caching, circuit breakers, cursor pagination, load testing, **LLM
+>   gateway, RAG/tool-use/MCP, AI guardrails**… written to interview depth with
+>   diagrams, code, and plain-English analogies.
 
 ---
 
@@ -33,8 +35,8 @@ double-entry ledger, per-tenant isolation, and full observability.
 | **P3** | **Saga hardening** — Ledger emits `LedgerOutcome`, Payment **compensates** rejected payments (→ VOIDED), **retries/backoff + DLQ** on both consumers → **MVP** | ✅ |
 | **P4** | **API gateway** (stateless) — edge JWT + reverse proxy, **token-bucket rate limiting**, **Redis cache-aside**, **circuit breaker**, **cursor pagination** | ✅ |
 | **P5** | **Proof + seed + load** — invariant/property tests, a `seed` command, and a Locust load test through the gateway | ✅ |
-| P6 | AI Query service (RAG/MCP + LLM gateway) | ⏳ next |
-| P7 | k8s / Helm / Terraform / CI | |
+| **P6** | **AI Query service** (FastAPI) — NL→answer over the ledger via a **multi-provider LLM gateway** (Claude/OpenAI/mock + failover), a tenant-scoped **tool-use loop**, guardrails, and an **MCP server** | ✅ |
+| P7 | k8s / Helm / Terraform / CI | ⏳ next |
 
 Verified end-to-end against real cloud DBs (Neon) + Kafka: happy path (capture →
 outbox → relay → Kafka → consumer → balanced double-entry → balances API) **and**
@@ -89,7 +91,7 @@ cp .env.example .env      # then edit — see docs/cloud-free-tiers.md
 
 # 3. Create the venv + install the three services (Windows paths shown; use .venv/bin on *nix)
 python -m venv .venv
-.venv/Scripts/pip install -e libs/shared -r services/payment/requirements-dev.txt -r services/ledger/requirements-dev.txt -r services/gateway/requirements-dev.txt
+.venv/Scripts/pip install -e libs/shared -r services/payment/requirements-dev.txt -r services/ledger/requirements-dev.txt -r services/gateway/requirements-dev.txt -r services/ai/requirements-dev.txt
 
 # 4. Create Kafka topics (once) + migrate the two stateful databases
 #    (the gateway is stateless — no database, nothing to migrate)
@@ -101,7 +103,7 @@ cd services/ledger  && ../../.venv/Scripts/python manage.py migrate && cd ../..
 cd services/payment && ../../.venv/Scripts/python manage.py create_tenant --name Acme --username acme --password pw && cd ../..
 ```
 
-Then run the processes, **each in its own terminal** — three API services and three
+Then run the processes, **each in its own terminal** — four API services and three
 workers:
 
 ```bash
@@ -112,6 +114,9 @@ cd services/ledger  && ../../.venv/Scripts/python manage.py runserver 127.0.0.1:
 ```
 ```bash
 cd services/gateway && ../../.venv/Scripts/python manage.py runserver 127.0.0.1:8010     # API Gateway (public entry)
+```
+```bash
+cd services/ai && ../../.venv/Scripts/python -m uvicorn app.main:app --port 8030          # AI Query (FastAPI); mock LLM if no keys
 ```
 ```bash
 cd services/payment && ../../.venv/Scripts/python manage.py run_outbox_relay             # Outbox relay (→ Kafka)
@@ -221,7 +226,8 @@ idempotent consumption, batch partial-success.
 ├── services/
 │   ├── payment/                # Django project: config/ core/ tenants/ payments/ outbox/ consumer/ tests/
 │   ├── ledger/                 # Django project: config/ core/ ledger/ consumer/ tests/
-│   └── gateway/                # Django project (stateless): config/ core/ gateway/ tests/ — proxy + resilience
+│   ├── gateway/                # Django project (stateless): config/ core/ gateway/ tests/ — proxy + resilience
+│   └── ai/                     # FastAPI (stateless): app/{auth,llm/,tools,guardrails,mcp_server} — NL→ledger
 └── docs/                       # phaseN.md walkthroughs + concepts/ handbook
 ```
 
