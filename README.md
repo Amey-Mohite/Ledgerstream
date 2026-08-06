@@ -15,7 +15,7 @@ double-entry ledger, per-tenant isolation, and full observability.
 > **New to this stack? Two learning tracks in [`docs/`](docs/):**
 > - **Per-phase walkthroughs** — every file explained from scratch:
 >   [phase0](docs/phase0.md) · [phase1](docs/phase1.md) · [phase2](docs/phase2.md) ·
->   [phase3](docs/phase3.md) · [phase4](docs/phase4.md)
+>   [phase3](docs/phase3.md) · [phase4](docs/phase4.md) · [phase5](docs/phase5.md)
 > - **[System-design handbook](docs/concepts/)** — Kafka, outbox, idempotency,
 >   double-entry ledger, CAP/PACELC, schema evolution, consumer scaling, **auth/JWT,
 >   rate limiting, caching, circuit breakers, cursor pagination**… written to
@@ -32,8 +32,8 @@ double-entry ledger, per-tenant isolation, and full observability.
 | **P2** | **Event backbone** — Avro + Schema Registry, outbox relay → Kafka, **Ledger service** consuming into an immutable double-entry ledger | ✅ |
 | **P3** | **Saga hardening** — Ledger emits `LedgerOutcome`, Payment **compensates** rejected payments (→ VOIDED), **retries/backoff + DLQ** on both consumers → **MVP** | ✅ |
 | **P4** | **API gateway** (stateless) — edge JWT + reverse proxy, **token-bucket rate limiting**, **Redis cache-aside**, **circuit breaker**, **cursor pagination** | ✅ |
-| P5 | Proof tests + seed + load test | ⏳ next |
-| P6 | AI Query service (RAG/MCP + LLM gateway) | |
+| **P5** | **Proof + seed + load** — invariant/property tests, a `seed` command, and a Locust load test through the gateway | ✅ |
+| P6 | AI Query service (RAG/MCP + LLM gateway) | ⏳ next |
 | P7 | k8s / Helm / Terraform / CI | |
 
 Verified end-to-end against real cloud DBs (Neon) + Kafka: happy path (capture →
@@ -134,6 +134,15 @@ Or hit the services directly, bypassing the gateway:
 bash scripts/smoke.sh
 ```
 
+**Seed data, then load-test through the gateway** (Phase 5 — run the load step against
+full-local infra, not cloud free tiers):
+```bash
+cd services/payment && ../../.venv/Scripts/python manage.py seed --tenants 5 --payments 100 --capture && cd ../..
+```
+```bash
+pip install -r loadtest/requirements.txt && USERS=5 locust -f loadtest/locustfile.py -H http://localhost:8010
+```
+
 ---
 
 ## The API
@@ -208,6 +217,7 @@ idempotent consumption, batch partial-success.
 │   ├── otel/ · prometheus/     # observability config
 ├── libs/shared/                # ledgerstream-shared: logging/tracing/metrics/config/kafka
 ├── scripts/                    # smoke_gateway.sh · smoke.sh · demo_groups.py · demo_consumer.py
+├── loadtest/                   # Locust load test (locustfile.py) — drives the gateway
 ├── services/
 │   ├── payment/                # Django project: config/ core/ tenants/ payments/ outbox/ consumer/ tests/
 │   ├── ledger/                 # Django project: config/ core/ ledger/ consumer/ tests/

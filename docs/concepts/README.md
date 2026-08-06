@@ -42,6 +42,7 @@ If you're starting cold, read in this order — each builds on the previous:
 22. [Caching & Cache Invalidation](caching-and-invalidation.md)  *(Phase 4)*
 23. [Circuit Breakers & Graceful Degradation](circuit-breakers.md)  *(Phase 4)*
 24. [Cursor (Keyset) Pagination](cursor-pagination.md)  *(Phase 4)*
+25. [Load Testing & Performance](load-testing-and-performance.md)  *(Phase 5)*
 
 ---
 
@@ -71,6 +72,7 @@ If you're starting cold, read in this order — each builds on the previous:
 | Rate limiting & backpressure | [link](rate-limiting.md) | gateway token bucket | ✅ written |
 | Circuit breakers & graceful degradation | [link](circuit-breakers.md) | gateway → backends | ✅ written |
 | Cursor pagination | [link](cursor-pagination.md) | ledger history API | ✅ written |
+| Load testing & performance | [link](load-testing-and-performance.md) | Locust + seed + proofs | ✅ written |
 | Double-entry ledger / event sourcing ideas | [link](double-entry-ledger.md) | ledger core | ✅ written |
 | Authentication, JWTs & tenancy | [link](authentication-and-jwt.md) | login + every request | ✅ written |
 | Multi-tenancy & isolation | [link](multi-tenancy.md) | every data access | ✅ written |

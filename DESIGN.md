@@ -7,12 +7,16 @@
 > the way it is. It is updated at the end of every phase. Read it top-to-bottom
 > to defend any decision in an interview.
 
-**Status:** Phase 4 complete (API **gateway** — stateless, DB-less — fronts
-Payment/Ledger with edge JWT auth + reverse proxy, plus four resilience patterns:
-**token-bucket rate limiting** (Redis, `429`), **cache-aside** on balances (Redis,
-TTL + invalidate-on-write), a per-service **circuit breaker** (fail-fast → `503`),
-and **cursor pagination** on the ledger history. Gateway 12 tests green; token bucket
-verified live on Upstash Redis).
+**Status:** Phase 5 complete (proof + seed + load: a `seed` command populates
+tenants/users/captured-payments through the real idempotent path; **proof tests** assert
+the ledger invariants — trial balance nets to zero, no double-post — over random data; a
+**Locust** load test drives the gateway (reads ≫ writes, 429s expected) to find the knee
+and watch rate-limit/cache/breaker under load. Seed verified live on Neon).
+
+_(Prior — Phase 4: stateless API **gateway** fronting Payment/Ledger with edge JWT +
+reverse proxy + four resilience patterns: token-bucket rate limiting, balances
+cache-aside, per-service circuit breaker, cursor pagination. Gateway 12 tests; token
+bucket verified live on Upstash.)_
 
 _(Prior — Phase 3: saga hardening — Ledger emits `LedgerOutcome`(POSTED/REJECTED);
 Payment saga consumer compensates a rejected payment to VOIDED, idempotent by state;
@@ -615,3 +619,60 @@ Retry-After) · **cache-aside** + **TTL/invalidation** (per-tenant) · **circuit
   backend).
 - Why a **4xx doesn't** trip the breaker but a **5xx/timeout does**.
 - OFFSET vs **keyset** pagination (deep-page cost + insert stability).
+
+### Phase 5 — Proof, Seed & Load ✅
+**Delivered:** evidence that the platform is correct *and* holds up under load.
+(1) **`seed`** management command (`payments/management/commands/seed.py`) — creates N
+tenants + OWNER users and authorizes/optionally captures M payments each, through the
+**real** `authorize_payment`/`capture_payment` path (idempotent via stable
+Idempotency-Keys + `get_or_create`), so seeded data is indistinguishable from real
+traffic (outbox events and all). Prints ready-to-use load-test creds. **Verified live on
+Neon.**
+(2) **Proof tests** (`services/ledger/tests/test_invariants.py`) — property tests over 50
+random payments assert the double-entry invariants: every journal entry is internally
+balanced, and the **trial balance** (total debits == total credits == money posted)
+nets to zero — plus an idempotency proof (replaying events never double-posts). These
+join the existing per-phase tests as whole-platform correctness evidence.
+(3) **Load test** (`loadtest/locustfile.py`, Locust) — drives the **gateway** with a
+realistic read-heavy mix and per-user login; **429s counted as expected** (the limiter
+working); load **spread across tenants** so per-tenant rate buckets don't mask
+throughput. Isolated in `loadtest/` with its own `requirements.txt` (no service
+dependency on Locust).
+
+**Skills checked off:** **load testing** (throughput + latency **percentiles**, the
+saturation knee, open vs closed models, coordinated omission) · **bottleneck analysis**
+(USE; DB **connection pooling** via `conn_max_age`; **consumer lag** for the async side)
+· **property/invariant testing** (trial balance, idempotent replay) · realistic **data
+seeding** through the real domain path · driving + observing the resilience stack under
+load.
+
+**Concept docs written:** `load-testing-and-performance.md`. Teaching walkthrough:
+`docs/phase5.md`.
+
+**Decisions & trade-offs:**
+- **Locust over k6/JMeter** — Python (same stack, scriptable in the repo's language),
+  live UI + latency percentiles out of the box, supports both closed and open models.
+  Kept in `loadtest/` with its own requirements so no service pulls it in.
+- **Seed uses the real service functions**, not raw `INSERT`s — seeded payments write
+  outbox events and respect idempotency, so a load/demo run exercises the true pipeline.
+- **Load spread across many tenants** — the gateway rate-limits per tenant, so a
+  single-tenant test would cap at the bucket rate and hide real capacity; seed several
+  and let Locust pick among them (or raise `RATE_LIMIT_CAPACITY` for raw-throughput runs).
+- **429s are success, not failure, in the load test** — under load the token bucket
+  *should* shed traffic; counting those as errors would misreport a working system.
+- **Load-test full-local infra, not cloud free tiers** — free-tier throttles would swamp
+  the architecture's own numbers (you'd measure Neon/Upstash, not the design). Seed +
+  proof tests are fine anywhere; only the load step needs isolated infra.
+- **Property test without a framework** — a plain random loop asserting invariants (no
+  `hypothesis` dependency) is enough to catch double-entry regressions. (`# ponytail`)
+
+**Scaffolded — be ready to explain (may not fully grasp yet):**
+- Why **percentiles, never averages** (tail latency + fan-out).
+- The **knee**/saturation point and **Little's Law** (`L = λW`).
+- **Open vs closed** load models and **coordinated omission**.
+- **Consumer lag** as the async-system health signal (vs HTTP latency alone).
+- **Connection pooling** (`conn_max_age`) vs a new TCP+TLS handshake per request.
+
+**Not run live this session:** the *load* run itself (needs the full-local stack up) and
+the DB-backed proof tests (need the ledger test Postgres) were written + syntax/`check`-
+verified but not executed here; the seed step was verified live against Neon.
