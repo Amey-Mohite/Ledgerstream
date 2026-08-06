@@ -7,11 +7,15 @@
 > the way it is. It is updated at the end of every phase. Read it top-to-bottom
 > to defend any decision in an interview.
 
-**Status:** Phase 5 complete (proof + seed + load: a `seed` command populates
-tenants/users/captured-payments through the real idempotent path; **proof tests** assert
-the ledger invariants — trial balance nets to zero, no double-post — over random data; a
-**Locust** load test drives the gateway (reads ≫ writes, 429s expected) to find the knee
-and watch rate-limit/cache/breaker under load. Seed verified live on Neon).
+**Status:** Phase 6 complete (AI Query service — the one **FastAPI** service: edge JWT +
+a **multi-provider LLM gateway** (Claude / OpenAI / mock, with failover + per-provider
+circuit breaker + token logging) that **grounds** answers via a provider-neutral
+**tool-use loop** over two tenant-scoped read tools, with **guardrails** (tool allowlist,
+server-side tenant scoping, prompt-injection defense, per-tenant LLM rate limit) and a
+standalone **MCP server** exposing the same tools. 9 tests green, hermetic via the mock).
+
+_(Prior — Phase 5: proof + seed + load — `seed` command, ledger-invariant property tests,
+and a Locust load test through the gateway.)_
 
 _(Prior — Phase 4: stateless API **gateway** fronting Payment/Ledger with edge JWT +
 reverse proxy + four resilience patterns: token-bucket rate limiting, balances
@@ -103,27 +107,29 @@ what the local demo pushes.
 
 ## 3. Architecture overview
 
+```mermaid
+flowchart TB
+  C["Client"] --> G["API Gateway · :8010 (Django, stateless)<br/>edge JWT · rate-limit · balances cache · circuit breaker · cursor pagination"]
+  G --> P["Payment · :8000 (DRF)<br/>authorize / capture + outbox"]
+  G --> L["Ledger · :8021 (DRF)<br/>balances · transactions (cursor)"]
+  G --> AI["AI Query · :8030 (FastAPI)<br/>NL question to grounded answer"]
+  AI -->|"internal LLM gateway (failover)"| LLM["Claude / OpenAI / mock<br/>external LLM providers"]
+  AI -->|"tool reads (get_balances / get_transactions)<br/>AI to Gateway to Ledger, tenant-scoped"| G
+  P -->|"outbox relay"| K[("Kafka KRaft + Schema Registry / Avro<br/>payments.events · ledger.events · dlq")]
+  K -->|"Ledger consumer"| L
+  L -->|"LedgerOutcome"| K
+  K -->|"Payment saga consumer"| P
+  P --> PGP[("postgres-payment<br/>Neon")]
+  L --> PGL[("postgres-ledger<br/>Neon")]
+  G <--> R[("Redis · Upstash<br/>cache + rate-limit")]
 ```
-                         ┌──────────────────────────┐
-        Client  ───────► │  API Gateway / BFF (DRF)  │  JWT · rate limit · corr-id
-                         └────────────┬─────────────┘
-                    REST     ┌────────┼────────────────┐  REST
-                             ▼        ▼                ▼
-                 ┌───────────────┐  ┌───────────────┐  ┌────────────────┐
-                 │ Payment (DRF) │  │ Ledger (DRF)  │  │ AI Query        │
-                 │  + outbox     │  │  read APIs    │  │ (FastAPI)       │
-                 └──────┬────────┘  └──────┬────────┘  └───────┬────────┘
-                        │ outbox relay      │ consumer          │ scoped reads
-                        ▼                   ▲                   ▼
-   postgres-payment  ┌──────────────── Kafka (KRaft) ───────────────┐  pgvector
-                     │  payments.events  │  ledger.events           │
-                     │  *.dlq            │  + Schema Registry (Avro)│
-                     └──────────────────────────────────────────────┘
-   postgres-ledger ◄─ Ledger consumer         Mongo ◄─ read-model projector
-                                                (denormalized tx view, Phase 4)
 
-   Cross-cutting: Redis (cache + rate-limit) · OTel Collector → Jaeger + Prometheus
-```
+**Stateless (no DB):** the API Gateway and the AI Query service. **Two "gateways",
+orthogonal:** the *API Gateway* fronts services; the *LLM gateway* (inside AI Query)
+fronts LLM providers. **AI reads loop back through the API Gateway** (`AI → Gateway →
+Ledger`), so they reuse its auth/rate-limit/cache/breaker. **Cross-cutting:** OTel
+Collector → Jaeger + Prometheus, correlation-id across every hop. **Deferred:** the
+Mongo read model (denormalized tx view) → its own future phase.
 
 **The saga (Payment → Ledger), the heart of the MVP:**
 1. Payment writes the business row **and** an outbox row in one DB transaction
@@ -676,3 +682,71 @@ load.
 **Not run live this session:** the *load* run itself (needs the full-local stack up) and
 the DB-backed proof tests (need the ledger test Postgres) were written + syntax/`check`-
 verified but not executed here; the seed step was verified live against Neon.
+
+### Phase 6 — AI Query Service ✅
+**Delivered:** the natural-language layer over a tenant's ledger — the one **FastAPI**
+service (`services/ai`, stateless), `POST /api/ai/query {question}` → grounded answer.
+(1) **Edge auth** — stateless JWT (shared key, `pyjwt`); keeps the raw token so tools
+re-present it to the Ledger. (2) **Multi-provider LLM gateway** (`app/llm/`) — a
+provider-neutral interface (`generate → final|tools|refusal`) with **ClaudeProvider**
+(Anthropic SDK, default `claude-opus-5`), **OpenAIProvider** (OpenAI SDK), and a
+deterministic **MockProvider** (runs with no keys); chain from `LLM_PROVIDER_ORDER`
+(only keyed providers built; mock is the always-available failover); **per-provider
+circuit breaker** + failover; token usage logged per turn. (3) **Grounding via a
+provider-neutral tool-use loop** — two read tools `get_balances`/`get_transactions`
+(`app/tools.py`) executed **through the API Gateway** with the caller's JWT
+(`AI → Gateway → Ledger`, tenant-scoped server-side; the reads reuse the gateway's
+rate limit / cache / breaker); no SQL tool, bounded iterations. (4) **Guardrails** — tool
+**allowlist**, **server-side tenant scoping**, a **prompt-injection** system prompt
+(treat tool output as data, never invent figures), and a **per-tenant LLM rate limit**
+(token bucket → 429). (5) A standalone **MCP server** (`app/mcp_server.py`, `FastMCP`)
+publishing the same two tenant-scoped tools to any MCP client. **9 hermetic tests**
+(mock provider + monkeypatched Ledger — no keys/network): auth, the grounded tool-use
+loop, allowlist block, 429 rate limit, and provider failover.
+
+**Skills checked off:** **LLM gateway** (multi-provider routing + **failover** + breaker
++ **token/cost** logging) · **tool use / function calling** with a **provider-neutral loop**
+· **grounding** (no hallucinated figures; answer from real tool output) · **RAG/MCP**
+awareness (tools vs retrieval; a real **MCP server**) · **AI guardrails** (allowlist,
+server-side tenant isolation, **prompt-injection** defense, LLM rate limiting) · first
+**FastAPI** service (ASGI, `pyjwt`, Starlette middleware) alongside the Django ones.
+
+**Concept docs written:** `llm-gateway.md`, `rag-tools-mcp.md`, `ai-guardrails.md`.
+Teaching walkthrough: `docs/phase6.md`.
+
+**Decisions & trade-offs:**
+- **Tool use, not NL→SQL.** The model gets two safe read tools, never a `run_sql` tool
+  and never DB access — least privilege. Tenant isolation is enforced server-side (the
+  tool call carries the caller's JWT), so a jailbroken model still can't cross tenants.
+  Safety lives in *our* code, never in the model's cooperation.
+- **AI reads go through the API Gateway, not the Ledger directly** (`AI → Gateway →
+  Ledger`). The AI service is just another caller of the public gateway, so its ledger
+  reads reuse edge auth + per-tenant rate limit + balances cache + circuit breaker
+  instead of re-inventing them, and the topology stays "the gateway fronts every
+  service." (`GATEWAY_BASE_URL`; the two gateways — API vs LLM — are orthogonal.)
+- **Multi-provider with a neutral interface.** Claude + OpenAI behind one `Provider`
+  contract so the tool-use loop is written once; real SDKs behind each adapter (no
+  OpenAI-compatible shim for Claude, which would drop tool use / refusal handling).
+- **Mock provider as first-class.** Deterministic, keyless — the service (and the whole
+  test suite) runs offline, and it's the always-available failover at the end of the
+  chain. `# ponytail`: keeps the demo runnable without spending tokens.
+- **Both internal tool-use AND an MCP server.** The internal loop grounds the HTTP API;
+  the MCP server republishes the same tools for external clients — same server-side
+  tenant scoping via a supplied JWT.
+- **Per-tenant LLM rate limit is in-memory** (`# ponytail`: per-process token bucket;
+  a shared Redis bucket like the gateway's if the AI service runs multiple replicas).
+- **Model default `claude-opus-5`**, no `temperature`/`budget_tokens` (rejected on Opus
+  5), and `stop_reason == "refusal"` handled before reading content — per the API.
+
+**Scaffolded — be ready to explain (may not fully grasp yet):**
+- Why the LLM is **never the security boundary** (allowlist + server-side scoping in code).
+- **Indirect prompt injection** (adversarial text arriving via fetched data, not just the
+  user message) and why "treat tool output as data" matters.
+- The **provider-neutral tool-use loop** and how two SDKs share it.
+- **Tool use vs MCP** (pattern vs standard transport/schema) and **tool use vs RAG**.
+- LLM **failover + breaker + token accounting** as the gateway's job.
+
+**Not run live this session:** real Claude/OpenAI answers (need API keys + a running
+Ledger) and the MCP server (needs the `mcp` package + an MCP client) were written +
+compile/`pytest`-verified via the mock; the grounded tool-use loop, guardrails, and
+failover are covered by the 9 hermetic tests.
