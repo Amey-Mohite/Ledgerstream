@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ledgerstream — Event-Driven Payments + Double-Entry Ledger with an AI Query Layer</title>
+<meta name="description" content="A production-grade, event-driven fintech backend: microservices over Kafka, an immutable double-entry ledger, multi-tenant isolation, full resilience patterns, and a grounded AI query layer — deployed with Kubernetes, Helm, Terraform, and CI/CD." />
+<style>
+  :root{
+    --bg:#0b0e14; --bg2:#0e1219; --surface:#141a24; --surface2:#1a2130;
+    --border:#243044; --text:#e7ecf3; --muted:#95a1b3; --faint:#6b7688;
+    --accent:#5eead4; --accent2:#818cf8; --accent3:#fbbf24;
+    --good:#34d399; --radius:16px; --maxw:1120px;
+    --shadow:0 10px 40px -12px rgba(0,0,0,.6);
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --bg:#f6f8fb; --bg2:#eef2f7; --surface:#ffffff; --surface2:#f3f6fa;
+      --border:#e2e8f0; --text:#0f172a; --muted:#475569; --faint:#94a3b8;
+      --accent:#0d9488; --accent2:#4f46e5; --accent3:#b45309;
+      --good:#059669; --shadow:0 10px 34px -14px rgba(2,6,23,.18);
+    }
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:radial-gradient(1200px 600px at 80% -10%, rgba(94,234,212,.10), transparent 60%),
+                        radial-gradient(1000px 500px at -10% 10%, rgba(129,140,248,.10), transparent 55%), var(--bg);
+    color:var(--text);
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.6; -webkit-font-smoothing:antialiased;
+  }
+  a{color:inherit;text-decoration:none}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+  /* nav */
+  nav{position:sticky;top:0;z-index:20;backdrop-filter:blur(10px);
+      background:color-mix(in srgb, var(--bg) 78%, transparent);border-bottom:1px solid var(--border)}
+  nav .wrap{display:flex;align-items:center;justify-content:space-between;height:62px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:.2px}
+  .brand .dot{width:11px;height:11px;border-radius:50%;
+      background:conic-gradient(from 180deg,var(--accent),var(--accent2),var(--accent3),var(--accent));box-shadow:0 0 14px var(--accent)}
+  .navlinks{display:flex;gap:26px;align-items:center;font-size:.92rem;color:var(--muted)}
+  .navlinks a:hover{color:var(--text)}
+  .navlinks .cta{color:var(--bg);background:var(--accent);padding:8px 15px;border-radius:10px;font-weight:600}
+  @media (max-width:760px){ .navlinks a:not(.cta){display:none} }
+
+  /* hero */
+  header{padding:78px 0 54px}
+  .eyebrow{display:inline-flex;gap:8px;align-items:center;font-size:.8rem;letter-spacing:.14em;text-transform:uppercase;
+      color:var(--accent);border:1px solid var(--border);background:var(--surface);padding:6px 12px;border-radius:999px}
+  h1{font-size:clamp(2.1rem,5vw,3.5rem);line-height:1.08;margin:22px 0 0;letter-spacing:-.02em;font-weight:800}
+  h1 .grad{background:linear-gradient(100deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .lede{font-size:clamp(1.05rem,2.2vw,1.28rem);color:var(--muted);max-width:760px;margin:20px 0 0}
+  .btns{display:flex;flex-wrap:wrap;gap:14px;margin-top:30px}
+  .btn{display:inline-flex;align-items:center;gap:9px;padding:13px 20px;border-radius:12px;font-weight:600;font-size:.98rem;border:1px solid var(--border);transition:.15s}
+  .btn.primary{background:var(--accent);color:#04231e;border-color:transparent}
+  .btn.primary:hover{transform:translateY(-2px);box-shadow:0 10px 26px -10px var(--accent)}
+  .btn.ghost:hover{border-color:var(--accent);color:var(--accent)}
+  .badges{display:flex;flex-wrap:wrap;gap:9px;margin-top:34px}
+  .badge{font-size:.82rem;color:var(--muted);background:var(--surface);border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+
+  /* sections */
+  section{padding:56px 0;border-top:1px solid var(--border)}
+  .kicker{font-size:.8rem;letter-spacing:.14em;text-transform:uppercase;color:var(--accent2);font-weight:700}
+  h2{font-size:clamp(1.5rem,3.2vw,2.1rem);margin:10px 0 6px;letter-spacing:-.02em;font-weight:800}
+  .sub{color:var(--muted);max-width:720px;margin:0 0 30px}
+
+  .grid{display:grid;gap:18px}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g4{grid-template-columns:repeat(4,1fr)}
+  @media (max-width:900px){.g3,.g4{grid-template-columns:repeat(2,1fr)}}
+  @media (max-width:620px){.g2,.g3,.g4{grid-template-columns:1fr}}
+
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:22px;transition:.18s}
+  .card:hover{border-color:color-mix(in srgb,var(--accent) 50%,var(--border));transform:translateY(-3px);box-shadow:var(--shadow)}
+  .card h3{margin:0 0 8px;font-size:1.08rem;display:flex;align-items:center;gap:10px}
+  .card p{margin:0;color:var(--muted);font-size:.95rem}
+  .ic{width:34px;height:34px;flex:none;display:grid;place-items:center;border-radius:9px;background:var(--surface2);border:1px solid var(--border);font-size:1.05rem}
+
+  /* architecture */
+  .arch{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px}
+  .tier-label{font-size:.78rem;text-transform:uppercase;letter-spacing:.12em;color:var(--faint);margin:0 0 10px}
+  .svc{display:flex;flex-direction:column;gap:6px;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px 16px}
+  .svc b{font-size:1rem}
+  .svc span{font-size:.85rem;color:var(--muted)}
+  .svc .port{font-size:.72rem;color:var(--accent);font-family:ui-monospace,monospace}
+  .flow{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:18px;padding-top:18px;border-top:1px dashed var(--border);
+        font-size:.86rem;color:var(--muted)}
+  .flow .step{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:6px 11px}
+  .flow .arr{color:var(--accent)}
+
+  /* stack */
+  .stackgroup{margin-bottom:18px}
+  .stackgroup h4{margin:0 0 10px;font-size:.82rem;text-transform:uppercase;letter-spacing:.1em;color:var(--faint)}
+  .chips{display:flex;flex-wrap:wrap;gap:8px}
+  .chip{font-size:.86rem;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:7px 12px}
+  .chip b{color:var(--accent)}
+
+  /* list */
+  ul.clean{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+  ul.clean li{position:relative;padding-left:26px;color:var(--muted)}
+  ul.clean li::before{content:"";position:absolute;left:2px;top:.6em;width:8px;height:8px;border-radius:50%;
+      background:var(--accent);box-shadow:0 0 10px var(--accent)}
+  ul.clean li b{color:var(--text)}
+
+  .note{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--accent3);
+        border-radius:12px;padding:16px 18px;color:var(--muted);font-size:.94rem}
+
+  footer{border-top:1px solid var(--border);padding:40px 0;color:var(--faint);font-size:.9rem}
+  footer .wrap{display:flex;flex-wrap:wrap;gap:14px;justify-content:space-between;align-items:center}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#top"><span class="dot"></span> Ledgerstream</a>
+    <div class="navlinks">
+      <a href="#architecture">Architecture</a>
+      <a href="#stack">Stack</a>
+      <a href="#highlights">Highlights</a>
+      <a href="#docs">Docs</a>
+      <a class="cta" href="https://github.com/Amey-Mohite/Ledgerstream" target="_blank" rel="noopener">View on GitHub →</a>
+    </div>
+  </div>
+</nav>
+
+<header id="top">
+  <div class="wrap">
+    <span class="eyebrow">◆ Backend + AI System Design · Fintech</span>
+    <h1>Event-driven <span class="grad">payments &amp; double-entry ledger</span><br>with a grounded AI query layer</h1>
+    <p class="lede">
+      A production-grade fintech backend built as independently deployable microservices over
+      <b>Apache Kafka</b> — an immutable double-entry ledger, strict multi-tenant isolation,
+      the full suite of resilience patterns, and a natural-language AI layer that answers from
+      real data (never hallucinated). Shipped with Kubernetes, Helm, Terraform, and CI/CD.
+    </p>
+    <div class="btns">
+      <a class="btn primary" href="https://github.com/Amey-Mohite/Ledgerstream" target="_blank" rel="noopener">⟶ Explore the code</a>
+      <a class="btn ghost" href="#architecture">See the architecture</a>
+    </div>
+    <div class="badges">
+      <span class="badge">Python</span><span class="badge">Django + DRF</span><span class="badge">FastAPI</span>
+      <span class="badge">Apache Kafka</span><span class="badge">Avro + Schema Registry</span><span class="badge">PostgreSQL</span>
+      <span class="badge">Redis</span><span class="badge">Kubernetes</span><span class="badge">Helm</span>
+      <span class="badge">Terraform</span><span class="badge">GitHub Actions</span><span class="badge">Claude / OpenAI</span>
+      <span class="badge">OpenTelemetry</span>
+    </div>
+  </div>
+</header>
+
+<!-- WHAT IT IS -->
+<section id="overview">
+  <div class="wrap">
+    <span class="kicker">Overview</span>
+    <h2>What it is</h2>
+    <p class="sub">
+      A platform that authorizes and captures payments, records every money movement in an
+      <b>immutable double-entry ledger</b>, keeps strict per-tenant isolation, and lets users
+      ask about their finances in plain English — grounded in real ledger data.
+    </p>
+    <div class="grid g4">
+      <div class="card"><h3><span class="ic">💳</span>Payments</h3><p>Idempotent authorize/capture with an <b>Idempotency-Key</b> — retries never double-charge.</p></div>
+      <div class="card"><h3><span class="ic">📒</span>Ledger</h3><p>Every transaction posts a <b>balanced double-entry</b> that nets to zero — proven by invariant tests.</p></div>
+      <div class="card"><h3><span class="ic">🏢</span>Multi-tenant</h3><p>Tenant isolation enforced <b>server-side on every hop</b>, never by client trust.</p></div>
+      <div class="card"><h3><span class="ic">🤖</span>AI query</h3><p>“What’s my cash balance?” → a grounded answer via a <b>tenant-scoped tool-use</b> loop.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- PROBLEMS -->
+<section id="problems">
+  <div class="wrap">
+    <span class="kicker">The hard parts</span>
+    <h2>Problems it solves</h2>
+    <p class="sub">The interesting engineering is in the failure modes — consistency, isolation, and resilience under load.</p>
+    <div class="grid g2">
+      <div class="card"><h3>💸 Money must never be lost or double-counted</h3><p>Double-entry ledger that nets to zero (enforced by property/invariant tests) + idempotent operations, so retries are safe.</p></div>
+      <div class="card"><h3>🔗 Consistency without a distributed transaction</h3><p>The <b>transactional outbox</b> ships events reliably; a <b>saga with compensation</b> auto-voids a payment when the ledger rejects it.</p></div>
+      <div class="card"><h3>🛡️ One tenant must never see another’s data</h3><p>Server-side tenant scoping on every request and every AI tool call — a jailbroken model still can’t cross tenants.</p></div>
+      <div class="card"><h3>⚡ Survive load &amp; partial failure</h3><p>Rate limiting, cache-aside, circuit breakers, retries/backoff, and dead-letter queues for poison messages.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ARCHITECTURE -->
+<section id="architecture">
+  <div class="wrap">
+    <span class="kicker">System design</span>
+    <h2>Architecture</h2>
+    <p class="sub">Four independently deployable services over a Kafka event backbone. Consumers run as standalone workers, never in the request cycle.</p>
+    <div class="arch">
+      <p class="tier-label">Services</p>
+      <div class="grid g4">
+        <div class="svc"><b>API Gateway</b><span>Edge JWT auth · rate limit · cache · circuit breaker · pagination</span><span class="port">Django · :8010</span></div>
+        <div class="svc"><b>Payment</b><span>Idempotency · transactional outbox · saga coordinator</span><span class="port">Django/DRF · :8000</span></div>
+        <div class="svc"><b>Ledger</b><span>Immutable double-entry · balances · history · consumer</span><span class="port">Django/DRF · :8000</span></div>
+        <div class="svc"><b>AI Query</b><span>Multi-provider LLM gateway · tool use · guardrails · MCP</span><span class="port">FastAPI · :8030</span></div>
+      </div>
+      <div class="flow">
+        <span class="step">capture</span><span class="arr">→</span>
+        <span class="step">outbox</span><span class="arr">→</span>
+        <span class="step">relay</span><span class="arr">→</span>
+        <span class="step mono">Kafka (Avro)</span><span class="arr">→</span>
+        <span class="step">ledger consumer</span><span class="arr">→</span>
+        <span class="step">balanced double-entry</span><span class="arr">→</span>
+        <span class="step">LedgerOutcome</span><span class="arr">→</span>
+        <span class="step">saga (void on reject)</span>
+      </div>
+    </div>
+    <div class="grid g3" style="margin-top:18px">
+      <div class="card"><h3>Database-per-service</h3><p>Each service owns its PostgreSQL — no shared DB, no cross-service joins.</p></div>
+      <div class="card"><h3>Avro + Schema Registry</h3><p>Typed event contracts with BACKWARD-compatible schema evolution; partition key = <span class="mono">hash(tenant_id, account_id)</span>.</p></div>
+      <div class="card"><h3>Observability</h3><p>OpenTelemetry → Jaeger + Prometheus; structured logs with correlation IDs across services.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- STACK -->
+<section id="stack">
+  <div class="wrap">
+    <span class="kicker">Technology</span>
+    <h2>Stack</h2>
+    <p class="sub">Chosen for realism — the same tools a senior team would reach for in production.</p>
+    <div class="grid g2">
+      <div>
+        <div class="stackgroup"><h4>Services</h4><div class="chips">
+          <span class="chip"><b>Python</b></span><span class="chip">Django + DRF</span><span class="chip">FastAPI</span><span class="chip">gunicorn / uvicorn</span>
+        </div></div>
+        <div class="stackgroup"><h4>Messaging &amp; data</h4><div class="chips">
+          <span class="chip"><b>Apache Kafka</b> (KRaft)</span><span class="chip">Confluent Schema Registry</span><span class="chip">Avro</span>
+          <span class="chip">PostgreSQL</span><span class="chip">Redis</span><span class="chip">MongoDB read model</span>
+        </div></div>
+        <div class="stackgroup"><h4>AI layer</h4><div class="chips">
+          <span class="chip"><b>Claude</b> + <b>OpenAI</b> + mock</span><span class="chip">LLM gateway + failover</span><span class="chip">Tool use / grounding</span><span class="chip">MCP server</span>
+        </div></div>
+      </div>
+      <div>
+        <div class="stackgroup"><h4>Deployment &amp; platform</h4><div class="chips">
+          <span class="chip">Docker</span><span class="chip"><b>Kubernetes</b></span><span class="chip">Helm</span><span class="chip">Terraform</span><span class="chip">GitHub Actions (CI/CD)</span><span class="chip">GHCR</span>
+        </div></div>
+        <div class="stackgroup"><h4>Observability</h4><div class="chips">
+          <span class="chip">OpenTelemetry</span><span class="chip">Jaeger</span><span class="chip">Prometheus</span><span class="chip">Correlation IDs</span>
+        </div></div>
+        <div class="stackgroup"><h4>Testing &amp; proof</h4><div class="chips">
+          <span class="chip">pytest</span><span class="chip">Invariant / property tests</span><span class="chip">Locust load test</span><span class="chip">Postgres service containers in CI</span>
+        </div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- HIGHLIGHTS -->
+<section id="highlights">
+  <div class="wrap">
+    <span class="kicker">Depth</span>
+    <h2>Engineering highlights</h2>
+    <div class="grid g2">
+      <div class="card">
+        <h3><span class="ic">🧩</span>Distributed systems</h3>
+        <ul class="clean" style="margin-top:12px">
+          <li><b>Saga with compensation</b>, transactional <b>outbox</b>, idempotent consumers (event-id dedupe + state-based).</li>
+          <li><b>At-least-once</b> delivery with commit-after-processing; poison-message <b>DLQ</b> + exponential backoff.</li>
+          <li>Avro schema evolution (BACKWARD); per-key ordering via partition keys.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3><span class="ic">🛡️</span>API resilience (gateway)</h3>
+        <ul class="clean" style="margin-top:12px">
+          <li>Atomic Redis <b>token-bucket rate limiting</b> (Lua).</li>
+          <li><b>Cache-aside</b> with invalidate-on-write; <b>circuit breaker</b> (closed/open/half-open).</li>
+          <li><b>Cursor (keyset) pagination</b>; edge JWT auth; one token works on every hop.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3><span class="ic">🤖</span>AI layer — safety first</h3>
+        <ul class="clean" style="margin-top:12px">
+          <li>The model <b>never writes SQL and never picks a tenant</b> — only two safe, tenant-scoped read tools.</li>
+          <li>Tools run <b>through the gateway</b> with the caller’s JWT — isolation enforced in code, not model goodwill.</li>
+          <li>Multi-provider gateway with <b>failover</b>, per-provider breakers, token/cost accounting; a standalone <b>MCP server</b>.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3><span class="ic">🚀</span>Delivery &amp; operations</h3>
+        <ul class="clean" style="margin-top:12px">
+          <li><b>CI</b> runs real test suites every commit (Django vs ephemeral Postgres; hermetic gateway/AI), then builds all images.</li>
+          <li>One <b>DRY Helm chart</b> renders every service + worker; <b>Terraform</b> installs it.</li>
+          <li>The whole stack — incl. optional in-cluster Kafka — runs on a local <b>Kubernetes</b> cluster.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- DEMONSTRATES -->
+<section id="demonstrates">
+  <div class="wrap">
+    <span class="kicker">Why it matters</span>
+    <h2>What it demonstrates</h2>
+    <div class="grid g3">
+      <div class="card"><h3>Senior backend</h3><p>Microservices, event-driven architecture, consistency patterns, resilience, multi-tenancy, and observability.</p></div>
+      <div class="card"><h3>AI application engineering</h3><p>LLM gateways, tool use &amp; grounding, RAG/MCP awareness, and production AI guardrails.</p></div>
+      <div class="card"><h3>DevOps / platform</h3><p>Docker, Kubernetes, Helm, Terraform, and CI/CD — plus documenting the <i>why</i> with honest trade-offs.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- DOCS -->
+<section id="docs">
+  <div class="wrap">
+    <span class="kicker">More than code</span>
+    <h2>Documentation</h2>
+    <p class="sub">The repo doubles as a teaching resource — the kind of writing that shows communication, not just code.</p>
+    <div class="grid g3">
+      <div class="card"><h3>📘 Per-phase walkthroughs</h3><p>Every file explained from scratch, phase by phase (P0 → P7).</p></div>
+      <div class="card"><h3>📚 Concepts handbook</h3><p>Interview-depth: Kafka, outbox, idempotency, sagas, CAP/PACELC, caching, breakers, LLM gateways, Kubernetes/Helm, CI/CD, IaC.</p></div>
+      <div class="card"><h3>📐 Design document</h3><p>Back-of-envelope estimates, per-component consistency analysis, and an honest “load-bearing vs demonstrative” tiering.</p></div>
+    </div>
+    <div class="btns">
+      <a class="btn primary" href="https://github.com/Amey-Mohite/Ledgerstream" target="_blank" rel="noopener">⟶ Read it on GitHub</a>
+    </div>
+  </div>
+</section>
+
+<!-- SCOPE -->
+<section id="scope">
+  <div class="wrap">
+    <span class="kicker">Transparency</span>
+    <h2>Scope &amp; honesty</h2>
+    <div class="note">
+      A portfolio project demonstrating production-grade <b>patterns and architecture</b>. It runs
+      end-to-end locally (cloud free tiers for data stores; local Docker / Kubernetes for infra) and
+      is validated by automated tests and CI. It is not operated as a live paid service — the
+      Kubernetes / Terraform artifacts are deployment-ready and locally runnable rather than applied
+      to a rented cluster. Every simplification is labeled in the design doc.
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>Ledgerstream — built by <b>Amey Mohite</b> · backend + AI system design.</span>
+    <span><a href="https://github.com/Amey-Mohite/Ledgerstream" target="_blank" rel="noopener">github.com/Amey-Mohite/Ledgerstream</a></span>
+  </div>
+</footer>
+
+</body>
+</html>
