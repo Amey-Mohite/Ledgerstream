@@ -49,6 +49,7 @@ volumes:
   postgres-ledger-data:
   mongo-data:
   redis-data:
+  redisinsight-data:
 
 services:
   # ---------------------------------------------------------------------------
@@ -277,3 +278,40 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # DEMO DASHBOARDS — only start with `--profile tools`. These are for SEEING the
+  # system in a demo (topics/messages/lag; cache keys/TTLs), not part of the app.
+  #   docker compose --profile tools up -d
+  # ---------------------------------------------------------------------------
+
+  # Kafka UI — browse topics (payments.events, ledger.events), the Avro messages,
+  # consumer groups + lag, and the Schema Registry. UI at http://localhost:8085.
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest   # (kafbat/kafka-ui is the maintained fork)
+    container_name: ls-kafka-ui
+    profiles: [tools]
+    networks: [ledgerstream]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8085:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: ledgerstream
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092          # in-cluster INTERNAL listener
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
+      DYNAMIC_CONFIG_ENABLED: "true"
+
+  # RedisInsight — the "Lens for Redis". Browse keys, values, TTLs. Connect it to
+  # your Upstash (rediss://, TLS ON) to see the gateway's balances cache + token
+  # buckets, or to the local `redis` container (--profile full). UI at :5540.
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: ls-redisinsight
+    profiles: [tools]
+    networks: [ledgerstream]
+    ports:
+      - "5540:5540"
+    volumes:
+      - redisinsight-data:/data

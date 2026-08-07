@@ -1,0 +1,173 @@
+# =============================================================================
+# kafka.yaml — OPTIONAL: run Kafka + Schema Registry INSIDE the cluster.
+#
+# Why: the worker pods default to KAFKA_BOOTSTRAP_SERVERS=kafka:9092 and
+# SCHEMA_REGISTRY_URL=http://schema-registry:8081 (from 00-config.yaml). Those
+# names only resolve if a Service by that name exists. Apply this file and they
+# do — so the outbox relay + consumers run fully in the cluster, no host Kafka,
+# no host.docker.internal, no ConfigMap change.
+#
+#   kubectl apply -f deploy/k8s/kafka.yaml
+#
+# ⚠️ DEMO-GRADE (Tier 3): single broker, KRaft, ephemeral emptyDir storage (data
+# is lost if the pod restarts), topics auto-created with 1 partition. Real
+# production uses a StatefulSet + PVCs + multiple brokers (or the Strimzi
+# operator). This is only to make the in-cluster event pipeline demoable.
+#
+# Apply order: after 00-config.yaml. The worker pods will connect once Kafka is
+# up (they crash-loop until then, which is normal — k8s keeps retrying).
+# =============================================================================
+
+# --- Kafka broker (single-node KRaft: broker + controller in one) ------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka
+  namespace: ledgerstream
+  labels:
+    app: ledgerstream
+    component: kafka
+spec:
+  replicas: 1
+  # One broker owns the volume; never run two at once → Recreate, not RollingUpdate.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ledgerstream
+      component: kafka
+  template:
+    metadata:
+      labels:
+        app: ledgerstream
+        component: kafka
+    spec:
+      containers:
+        - name: kafka
+          image: apache/kafka:3.8.0        # same image as docker-compose; auto-formats KRaft storage
+          ports:
+            - name: internal
+              containerPort: 9092
+          env:
+            - { name: KAFKA_NODE_ID, value: "1" }
+            - { name: KAFKA_PROCESS_ROLES, value: "broker,controller" }
+            # Single node reaches its OWN controller on localhost (avoids a
+            # Service-DNS-before-Ready chicken-and-egg at startup).
+            - { name: KAFKA_CONTROLLER_QUORUM_VOTERS, value: "1@localhost:9093" }
+            - { name: KAFKA_LISTENERS, value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093" }
+            # Clients (the worker pods) are told to connect to "kafka:9092" — the
+            # Service name below. This is THE line that makes in-cluster clients work.
+            - { name: KAFKA_ADVERTISED_LISTENERS, value: "PLAINTEXT://kafka:9092" }
+            - { name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP, value: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT" }
+            - { name: KAFKA_CONTROLLER_LISTENER_NAMES, value: "CONTROLLER" }
+            - { name: KAFKA_INTER_BROKER_LISTENER_NAME, value: "PLAINTEXT" }
+            # Single broker → replication factors of 1.
+            - { name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR, value: "1" }
+            - { name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS, value: "0" }
+            # Demo shortcut: auto-create topics on first use (default 1 partition).
+            # (Compose sets this false + pre-creates topics via infra/kafka/create_topics.py.)
+            - { name: KAFKA_AUTO_CREATE_TOPICS_ENABLE, value: "true" }
+            - { name: CLUSTER_ID, value: "ledgerstream-local-cluster-0" }
+            - { name: KAFKA_LOG_DIRS, value: "/var/lib/kafka/data" }
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/kafka/data
+          readinessProbe:
+            tcpSocket: { port: 9092 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 9092 }
+            initialDelaySeconds: 40
+            periodSeconds: 20
+      volumes:
+        - name: data
+          emptyDir: {}                     # EPHEMERAL — demo only; use a PVC to persist
+---
+# --- The "kafka" Service — this is the hostname the worker pods resolve --------
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka                              # ← matches KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+  namespace: ledgerstream
+  labels:
+    app: ledgerstream
+    component: kafka
+spec:
+  selector:
+    app: ledgerstream
+    component: kafka
+  ports:
+    - name: internal
+      port: 9092
+      targetPort: 9092
+---
+# --- Schema Registry (stores/serves the Avro schemas) ------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: schema-registry
+  namespace: ledgerstream
+  labels:
+    app: ledgerstream
+    component: schema-registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ledgerstream
+      component: schema-registry
+  template:
+    metadata:
+      labels:
+        app: ledgerstream
+        component: schema-registry
+    spec:
+      # Kubernetes injects <SERVICE>_PORT env vars for every Service in the
+      # namespace. The `schema-registry` Service injects SCHEMA_REGISTRY_PORT=
+      # tcp://<ip>:8081, which the cp image mistakes for its (deprecated) port
+      # config → crashes on startup (exit 1). Disable the injection.
+      enableServiceLinks: false
+      containers:
+        - name: schema-registry
+          image: confluentinc/cp-schema-registry:7.7.0
+          ports:
+            - name: http
+              containerPort: 8081
+          env:
+            - { name: SCHEMA_REGISTRY_HOST_NAME, value: "schema-registry" }
+            # Talks to the Kafka Service above for its own storage topic.
+            - { name: SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS, value: "PLAINTEXT://kafka:9092" }
+            - { name: SCHEMA_REGISTRY_LISTENERS, value: "http://0.0.0.0:8081" }
+            - { name: SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL, value: "BACKWARD" }
+            # REQUIRED on a single broker: the internal _schemas topic defaults to
+            # replication factor 3, which one broker rejects → SR exits 1 in ~3s.
+            - { name: SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR, value: "1" }
+          readinessProbe:
+            httpGet: { path: /subjects, port: 8081 }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 8081 }
+            initialDelaySeconds: 60
+            periodSeconds: 20
+---
+# --- The "schema-registry" Service --------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: schema-registry                    # ← matches SCHEMA_REGISTRY_URL=http://schema-registry:8081
+  namespace: ledgerstream
+  labels:
+    app: ledgerstream
+    component: schema-registry
+spec:
+  selector:
+    app: ledgerstream
+    component: schema-registry
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 8081

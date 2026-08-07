@@ -1,0 +1,9 @@
+# .helmignore — files/patterns Helm EXCLUDES when packaging the chart into a
+# .tgz (same idea as .gitignore/.dockerignore). Keeps junk out of the artifact.
+.DS_Store       # macOS folder metadata
+.git/           # version-control internals
+.gitignore
+*.tmproj        # editor project files
+*.bak           # backups
+*.orig          # merge leftovers
+*~              # editor temp files

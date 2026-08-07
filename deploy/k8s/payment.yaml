@@ -1,0 +1,149 @@
+# =============================================================================
+# payment.yaml — the Payment service on Kubernetes.
+#
+# Payment is a Django/DRF service that owns idempotency + the outbox + the saga.
+# It runs THREE separate processes, each its own Deployment, all from the SAME
+# image (docker.io/library/ledgerstream-payment:dev) — only the command differs:
+#
+#   1. web              → the HTTP API (gunicorn)          — default image command
+#   2. outbox-relay     → ships outbox rows to Kafka       — a worker (needs Kafka)
+#   3. ledger-outcomes  → saga consumer (VOID on REJECTED) — a worker (needs Kafka)
+#
+# The web Deployment gets a Service (below); the two workers do NOT — nothing
+# calls them over the network; they pull from Kafka / poll the DB.
+# =============================================================================
+
+# --- 1. WEB: the payment HTTP API --------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledgerstream-payment-web
+  namespace: ledgerstream
+  labels:
+    app: ledgerstream
+    component: payment-web        # ← the Service selects pods with THIS label
+spec:
+  replicas: 2                     # two API pods for availability
+  selector:
+    matchLabels:                  # this Deployment owns pods with these labels
+      app: ledgerstream
+      component: payment-web
+  template:
+    metadata:
+      labels:                     # stamped on each pod — MUST match the selector
+        app: ledgerstream
+        component: payment-web
+    spec:
+      containers:
+        - name: payment
+          image: docker.io/library/ledgerstream-payment:dev
+          imagePullPolicy: IfNotPresent    # use the locally-built image; don't pull
+          ports:
+            - name: http
+              containerPort: 8000          # the container listens on 8000 (gunicorn)
+          # Health checks. TCP = "is the port open?". Readiness gates traffic;
+          # liveness restarts a wedged pod.
+          readinessProbe:
+            tcpSocket: { port: 8000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 8000 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          # Pull ALL env from the shared ConfigMap + Secret (00-config.yaml).
+          envFrom:
+            - configMapRef: { name: ledgerstream-config }
+            - secretRef: { name: ledgerstream-secrets }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }   # scheduler guarantees
+            limits: { cpu: 500m, memory: 512Mi }    # hard caps
+---
+# --- 2. OUTBOX RELAY worker (no Service, no probes, no port) ------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledgerstream-payment-outbox-relay
+  namespace: ledgerstream
+  labels:
+    app: ledgerstream
+    component: payment-outbox-relay
+spec:
+  replicas: 1                     # one relay is enough (it uses SKIP LOCKED)
+  selector:
+    matchLabels:
+      app: ledgerstream
+      component: payment-outbox-relay
+  template:
+    metadata:
+      labels:
+        app: ledgerstream
+        component: payment-outbox-relay
+    spec:
+      containers:
+        - name: payment
+          image: docker.io/library/ledgerstream-payment:dev
+          imagePullPolicy: IfNotPresent
+          # THE difference from web: override the default command → run the relay.
+          # (Needs Kafka reachable — see KAFKA_BOOTSTRAP_SERVERS in 00-config.yaml.)
+          command: ["python", "manage.py", "run_outbox_relay"]
+          envFrom:
+            - configMapRef: { name: ledgerstream-config }
+            - secretRef: { name: ledgerstream-secrets }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+---
+# --- 3. LEDGER-OUTCOMES saga consumer (no Service, no probes, no port) --------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledgerstream-payment-ledger-outcomes
+  namespace: ledgerstream
+  labels:
+    app: ledgerstream
+    component: payment-ledger-outcomes
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ledgerstream
+      component: payment-ledger-outcomes
+  template:
+    metadata:
+      labels:
+        app: ledgerstream
+        component: payment-ledger-outcomes
+    spec:
+      containers:
+        - name: payment
+          image: docker.io/library/ledgerstream-payment:dev
+          imagePullPolicy: IfNotPresent
+          # Consumes LedgerOutcome events; VOIDs the payment on REJECTED (the saga
+          # compensation). Also needs Kafka.
+          command: ["python", "manage.py", "consume_ledger_outcomes"]
+          envFrom:
+            - configMapRef: { name: ledgerstream-config }
+            - secretRef: { name: ledgerstream-secrets }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+---
+# --- The Service: stable in-cluster address for the WEB pods only -------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledgerstream-payment          # → other pods reach it at "ledgerstream-payment:8000"
+  namespace: ledgerstream
+  labels:
+    app: ledgerstream
+    component: payment
+spec:
+  type: ClusterIP                      # internal-only (the gateway is the public door)
+  selector:
+    app: ledgerstream
+    component: payment-web             # ← ONLY web pods, never the two workers
+  ports:
+    - name: http
+      port: 8000                       # port the Service listens on
+      targetPort: 8000                 # → forwarded to the pod's 8000

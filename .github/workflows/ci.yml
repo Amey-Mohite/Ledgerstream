@@ -1,0 +1,137 @@
+name: CI
+
+# Runs on every push to main / phase branches and every PR. Three test jobs gate
+# a build job that compiles all four service images (and pushes them to GHCR on
+# main). This is the one genuinely load-bearing artifact of Phase 7 — the Helm /
+# Terraform pieces are showcase; this actually runs on every commit.
+on:
+  push:
+    branches: [main, "phase*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Shared library tests (obs primitives + kafka helper).
+  # ---------------------------------------------------------------------------
+  shared-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "./libs/shared[dev,kafka]"
+      - run: pytest libs/shared -q
+
+  # ---------------------------------------------------------------------------
+  # 2. Django services that need a real Postgres (payment, ledger). Two service
+  #    containers mirror the local dev ports (5433 / 5434) the conftests default
+  #    to, so no test code changes are needed.
+  # ---------------------------------------------------------------------------
+  django-db-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres-payment:
+        image: postgres:16
+        env:
+          POSTGRES_USER: payment
+          POSTGRES_PASSWORD: payment_dev_pw
+          POSTGRES_DB: payment
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U payment -d payment"
+          --health-interval 10s --health-timeout 5s --health-retries 10
+      postgres-ledger:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ledger
+          POSTGRES_PASSWORD: ledger_dev_pw
+          POSTGRES_DB: ledger
+        ports: ["5434:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ledger -d ledger"
+          --health-interval 10s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Payment — install & test
+        run: |
+          pip install "./libs/shared[kafka]"
+          pip install -r services/payment/requirements.txt pytest pytest-django
+          pytest -q
+        working-directory: services/payment
+
+      - name: Ledger — install & test
+        run: |
+          pip install "./libs/shared[kafka]"
+          pip install -r services/ledger/requirements.txt pytest pytest-django
+          pytest -q
+        working-directory: services/ledger
+
+  # ---------------------------------------------------------------------------
+  # 3. Hermetic services — no external infra (gateway uses fakeredis; ai forces
+  #    the mock LLM provider via its conftest).
+  # ---------------------------------------------------------------------------
+  hermetic-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [gateway, ai]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install & test ${{ matrix.service }}
+        run: |
+          pip install "./libs/shared"
+          pip install -r services/${{ matrix.service }}/requirements.txt pytest pytest-django "fakeredis[lua]"
+          pytest -q
+        working-directory: services/${{ matrix.service }}
+
+  # ---------------------------------------------------------------------------
+  # 4. Build all four images (proves the Dockerfiles work on every commit). Push
+  #    to GHCR only on main. Build context is the repo root (the shared lib lives
+  #    outside each service dir).
+  # ---------------------------------------------------------------------------
+  build-images:
+    needs: [shared-tests, django-db-tests, hermetic-tests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service: [payment, ledger, gateway, ai]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute lowercase image name
+        id: img
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/ledgerstream-${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & (on main) push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/${{ matrix.service }}/Dockerfile
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: |
+            ${{ steps.img.outputs.name }}:latest
+            ${{ steps.img.outputs.name }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -10,7 +10,7 @@ COMPOSE := docker compose
 
 .DEFAULT_GOAL := help
 
-.PHONY: help env up full-up down restart ps logs health clean shared-install shared-test
+.PHONY: help env up full-up tools-up down restart ps logs health clean shared-install shared-test
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -24,6 +24,9 @@ up: env ## DAILY DEV: start Kafka + Schema Registry + observability (data stores
 
 full-up: env ## OFFLINE DEMO: also start local postgres/mongo/redis (--profile full)
 	$(COMPOSE) --profile full up -d --wait
+
+tools-up: ## DEMO DASHBOARDS: Kafka UI (:8085) + RedisInsight (:5540)
+	$(COMPOSE) --profile tools up -d
 
 down: ## Stop the stack (keeps volumes/data). Add profile to catch full-mode containers.
 	$(COMPOSE) --profile full down

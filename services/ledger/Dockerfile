@@ -4,8 +4,10 @@
 # ONE image, TWO run modes (different command per Kubernetes Deployment):
 #   web      → gunicorn (the read API)          — the default CMD below
 #   consumer → python manage.py consume_payments — the Kafka worker
-# The consumer does NOT need the .avsc files — it fetches schemas from the
-# registry by id — so we don't COPY schemas/ here.
+# The consumer CONSUMES PaymentCaptured (schema fetched from the registry by id)
+# but also PRODUCES LedgerOutcome, and serializing that needs ledger_outcome.avsc
+# at runtime — so we COPY schemas/ here (the shared kafka helper's upward search
+# finds /app/schemas/avro). Missing this = FileNotFoundError: schemas/avro.
 
 FROM python:3.12-slim AS base
 
@@ -20,6 +22,9 @@ RUN pip install /app/libs/shared
 
 COPY services/ledger/requirements.txt /app/services/ledger/requirements.txt
 RUN pip install -r /app/services/ledger/requirements.txt
+
+# Avro schemas the consumer needs to SERIALIZE the LedgerOutcome events it emits.
+COPY schemas /app/schemas
 
 COPY services/ledger /app/services/ledger
 WORKDIR /app/services/ledger

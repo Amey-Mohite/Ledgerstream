@@ -1,0 +1,41 @@
+# =============================================================================
+# service.yaml — a stable in-cluster address for each service's WEB pods.
+#
+# A Service is a fixed name + virtual IP that load-balances to a moving set of
+# pods chosen BY LABEL. Pods die and get new IPs; the Service name never changes,
+# so callers use "http://ledgerstream-payment:8000" and always hit a healthy pod.
+#
+# One Service per service (payment/ledger/gateway/ai). Workers get NO Service —
+# nothing sends requests TO a worker; it pulls messages from Kafka itself.
+# =============================================================================
+
+{{/* Save root context before the loop reassigns "." to each service. */}}
+{{- $root := . }}
+{{/* $svcName = "payment"/..., $svc = its config ({port, workloads}). */}}
+{{- range $svcName, $svc := .Values.services }}
+apiVersion: v1
+kind: Service
+metadata:
+  # e.g. "ledgerstream-payment" — this IS the DNS name other pods resolve.
+  name: {{ include "ledgerstream.fullname" $root }}-{{ $svcName }}
+  labels:
+    # Shared recommended labels from _helpers.tpl.
+    {{- include "ledgerstream.labels" $root | nindent 4 }}
+    # Marks which service this Service belongs to.
+    app.kubernetes.io/component: {{ $svcName }}
+spec:
+  # ClusterIP = reachable only INSIDE the cluster (external traffic comes via the
+  # gateway/ingress, not straight to each service).
+  type: ClusterIP
+  selector:
+    # THE KEY LINE: route traffic to pods carrying these labels. The "-web"
+    # suffix means ONLY web pods — never the workers (which share the other
+    # labels but have component "<svc>-outbox-relay", etc.).
+    {{- include "ledgerstream.selectorLabels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $svcName }}-web
+  ports:
+    - name: http
+      port: {{ $svc.port }}          # port the Service listens on (what callers dial)
+      targetPort: {{ $svc.port }}    # port on the pod it forwards to (same here)
+---
+{{- end }}

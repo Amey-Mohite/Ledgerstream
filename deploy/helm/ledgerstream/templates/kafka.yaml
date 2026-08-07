@@ -1,0 +1,223 @@
+# OPTIONAL in-cluster Kafka + Schema Registry (demo-grade). Rendered only when
+# kafka.enabled=true. Services are named literally `kafka` / `schema-registry`
+# so the pods' default KAFKA_BOOTSTRAP_SERVERS=kafka:9092 and
+# SCHEMA_REGISTRY_URL=http://schema-registry:8081 (the ConfigMap) resolve with no
+# other change. Single broker, KRaft, ephemeral storage — for demos, not prod.
+{{- if .Values.kafka.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka
+  labels:
+    {{- include "ledgerstream.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kafka
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate                 # one broker owns the volume — never two at once
+  selector:
+    matchLabels:
+      {{- include "ledgerstream.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: kafka
+  template:
+    metadata:
+      labels:
+        {{- include "ledgerstream.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: kafka
+    spec:
+      containers:
+        - name: kafka
+          image: {{ .Values.kafka.image }}
+          ports:
+            - name: internal
+              containerPort: 9092
+          env:
+            - name: KAFKA_NODE_ID
+              value: "1"
+            - name: KAFKA_PROCESS_ROLES
+              value: "broker,controller"
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: "1@localhost:9093"      # single node → its own controller on localhost
+            - name: KAFKA_LISTENERS
+              value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "PLAINTEXT://kafka:9092" # what clients are told to connect to → the Service
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT"
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES
+              value: "CONTROLLER"
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: "PLAINTEXT"
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+            - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
+              value: "0"
+            - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
+              value: {{ .Values.kafka.autoCreateTopics | quote }}
+            - name: CLUSTER_ID
+              value: {{ .Values.kafka.clusterId | quote }}
+            - name: KAFKA_LOG_DIRS
+              value: "/var/lib/kafka/data"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/kafka/data
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 40
+            periodSeconds: 20
+      volumes:
+        - name: data
+          emptyDir: {}                       # EPHEMERAL — demo only; use a PVC to persist
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka                                # ← the hostname the worker pods resolve
+  labels:
+    {{- include "ledgerstream.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kafka
+spec:
+  selector:
+    {{- include "ledgerstream.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: kafka
+  ports:
+    - name: internal
+      port: 9092
+      targetPort: 9092
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: schema-registry
+  labels:
+    {{- include "ledgerstream.labels" . | nindent 4 }}
+    app.kubernetes.io/component: schema-registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "ledgerstream.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: schema-registry
+  template:
+    metadata:
+      labels:
+        {{- include "ledgerstream.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: schema-registry
+    spec:
+      # Kubernetes injects <SERVICE>_PORT env vars for every Service in the
+      # namespace. The `schema-registry` Service injects SCHEMA_REGISTRY_PORT=
+      # tcp://<ip>:8081, which the cp image mistakes for its (deprecated) port
+      # config → crashes on startup (exit 1). Disable the injection.
+      enableServiceLinks: false
+      containers:
+        - name: schema-registry
+          image: {{ .Values.kafka.schemaRegistryImage }}
+          ports:
+            - name: http
+              containerPort: 8081
+          env:
+            - name: SCHEMA_REGISTRY_HOST_NAME
+              value: "schema-registry"
+            - name: SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS
+              value: "PLAINTEXT://kafka:9092"
+            - name: SCHEMA_REGISTRY_LISTENERS
+              value: "http://0.0.0.0:8081"
+            - name: SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL
+              value: "BACKWARD"
+            # REQUIRED on a single broker: the internal _schemas topic defaults to
+            # replication factor 3, which one broker rejects → SR exits 1 in ~3s.
+            - name: SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR
+              value: "1"
+          readinessProbe:
+            httpGet:
+              path: /subjects
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8081
+            initialDelaySeconds: 60
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: schema-registry                      # ← matches SCHEMA_REGISTRY_URL
+  labels:
+    {{- include "ledgerstream.labels" . | nindent 4 }}
+    app.kubernetes.io/component: schema-registry
+spec:
+  selector:
+    {{- include "ledgerstream.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: schema-registry
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 8081
+{{- if .Values.kafka.uiEnabled }}
+---
+# Kafka UI — browse topics/messages/consumer-lag/schemas. View via
+# `kubectl -n <ns> port-forward svc/kafka-ui 8085:8080` → http://localhost:8085
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-ui
+  labels:
+    {{- include "ledgerstream.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kafka-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "ledgerstream.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: kafka-ui
+  template:
+    metadata:
+      labels:
+        {{- include "ledgerstream.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: kafka-ui
+    spec:
+      containers:
+        - name: kafka-ui
+          image: {{ .Values.kafka.uiImage }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: KAFKA_CLUSTERS_0_NAME
+              value: "ledgerstream"
+            - name: KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS
+              value: "kafka:9092"                 # the in-cluster Kafka Service
+            - name: KAFKA_CLUSTERS_0_SCHEMAREGISTRY
+              value: "http://schema-registry:8081"
+            - name: DYNAMIC_CONFIG_ENABLED
+              value: "true"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-ui
+  labels:
+    {{- include "ledgerstream.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kafka-ui
+spec:
+  selector:
+    {{- include "ledgerstream.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: kafka-ui
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+{{- end }}
+{{- end }}

@@ -46,6 +46,10 @@ If you're starting cold, read in this order — each builds on the previous:
 26. [The LLM Gateway](llm-gateway.md)  *(Phase 6)*
 27. [Grounding: Tool Use, RAG & MCP](rag-tools-mcp.md)  *(Phase 6)*
 28. [AI Guardrails](ai-guardrails.md)  *(Phase 6)*
+29. [Containers & Images](containers-and-images.md)  *(Phase 7)*
+30. [Kubernetes & Helm](kubernetes-and-helm.md)  *(Phase 7)*
+31. [CI/CD Pipelines](ci-cd-pipelines.md)  *(Phase 7)*
+32. [Infrastructure as Code (Terraform)](infrastructure-as-code.md)  *(Phase 7)*
 
 ---
 
@@ -82,6 +86,10 @@ If you're starting cold, read in this order — each builds on the previous:
 | LLM gateway (multi-provider) | [link](llm-gateway.md) | AI Query service | ✅ written |
 | Grounding: tool use / RAG / MCP | [link](rag-tools-mcp.md) | AI Query tools + MCP | ✅ written |
 | AI guardrails | [link](ai-guardrails.md) | AI Query service | ✅ written |
+| Containers & images | [link](containers-and-images.md) | Dockerfiles, GHCR images | ✅ written |
+| Kubernetes & Helm | [link](kubernetes-and-helm.md) | `deploy/helm` chart | ✅ written |
+| CI/CD pipelines | [link](ci-cd-pipelines.md) | `.github/workflows/ci.yml` | ✅ written |
+| Infrastructure as Code (Terraform) | [link](infrastructure-as-code.md) | `deploy/terraform` | ✅ written |
 
 **Forward references you may hit early in DESIGN.md** (teasers until their full
 file lands):

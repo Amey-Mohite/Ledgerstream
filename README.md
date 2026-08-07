@@ -16,12 +16,13 @@ double-entry ledger, per-tenant isolation, and full observability.
 > - **Per-phase walkthroughs** — every file explained from scratch:
 >   [phase0](docs/phase0.md) · [phase1](docs/phase1.md) · [phase2](docs/phase2.md) ·
 >   [phase3](docs/phase3.md) · [phase4](docs/phase4.md) · [phase5](docs/phase5.md) ·
->   [phase6](docs/phase6.md)
+>   [phase6](docs/phase6.md) · [phase7](docs/phase7.md)
 > - **[System-design handbook](docs/concepts/)** — Kafka, outbox, idempotency,
 >   double-entry ledger, CAP/PACELC, schema evolution, consumer scaling, auth/JWT,
 >   rate limiting, caching, circuit breakers, cursor pagination, load testing, **LLM
->   gateway, RAG/tool-use/MCP, AI guardrails**… written to interview depth with
->   diagrams, code, and plain-English analogies.
+>   gateway, RAG/tool-use/MCP, AI guardrails**, **containers, Kubernetes/Helm, CI/CD,
+>   Terraform/IaC**… written to interview depth with diagrams, code, and plain-English
+>   analogies.
 
 ---
 
@@ -36,7 +37,7 @@ double-entry ledger, per-tenant isolation, and full observability.
 | **P4** | **API gateway** (stateless) — edge JWT + reverse proxy, **token-bucket rate limiting**, **Redis cache-aside**, **circuit breaker**, **cursor pagination** | ✅ |
 | **P5** | **Proof + seed + load** — invariant/property tests, a `seed` command, and a Locust load test through the gateway | ✅ |
 | **P6** | **AI Query service** (FastAPI) — NL→answer over the ledger via a **multi-provider LLM gateway** (Claude/OpenAI/mock + failover), a tenant-scoped **tool-use loop**, guardrails, and an **MCP server** | ✅ |
-| P7 | k8s / Helm / Terraform / CI | ⏳ next |
+| **P7** | **Deployment & CI** — GitHub Actions (test → build → GHCR), one **DRY Helm chart** for all services + workers, **Terraform** to install it | ✅ |
 
 Verified end-to-end against real cloud DBs (Neon) + Kafka: happy path (capture →
 outbox → relay → Kafka → consumer → balanced double-entry → balances API) **and**
@@ -194,6 +195,45 @@ Schema Registry http://localhost:8081/subjects · Kafka `localhost:29092`.
 
 ---
 
+## Visualize it — demo dashboards
+
+Three GUIs let you *see* the system for a demo (all optional). Start the two containerized
+ones on a **`tools` profile** so they never run in normal dev:
+
+```bash
+docker compose --profile tools up -d      # or: make tools-up
+```
+
+| System | Tool | Where | What you see |
+|---|---|---|---|
+| **Kubernetes** | [Lens](https://k8slens.dev/) or `k9s` | desktop / terminal | pods, deployments, logs, the live cluster |
+| **Kafka** | **Kafka UI** (in `tools` profile) | http://localhost:8085 | topics (`payments.events`, `ledger.events`), the **Avro messages**, consumer groups + **lag**, Schema Registry |
+| **Redis** | **RedisInsight** (in `tools` profile) | http://localhost:5540 | the gateway's **balances cache** keys (with TTLs) + **rate-limit token buckets** |
+
+- **Kafka UI** auto-connects to the local broker + Schema Registry — open it and watch a
+  `PaymentCaptured` land in `payments.events`, get consumed, and a `LedgerOutcome` appear in
+  `ledger.events`.
+- **RedisInsight** needs one connection added in its UI: point it at your **Upstash** URL
+  (host, port `6379`, password, **TLS on** for `rediss://`), or the local `redis` container
+  (`--profile full`). Run [`scripts/smoke_gateway.sh`](scripts/smoke_gateway.sh), then refresh
+  to see the `balances:*` cache keys appear and expire.
+
+**Running on Kubernetes?** The compose Kafka UI above is for the compose stack. When Kafka runs
+*in-cluster* (Helm `--set kafka.enabled=true`, or `kubectl apply -f deploy/k8s/kafka.yaml`), a
+Kafka UI is deployed in-cluster too — with **Helm it's automatic** (rendered by `kafka.enabled`;
+skip with `--set kafka.uiEnabled=false`); with **raw manifests** install it explicitly:
+
+```bash
+kubectl apply -f deploy/k8s/kafka-ui.yaml
+```
+
+Then view it (both methods):
+```bash
+kubectl -n ledgerstream port-forward svc/kafka-ui 8085:8080
+```
+
+---
+
 ## Testing
 
 ```bash
@@ -206,12 +246,132 @@ cd services/ledger  && ../../.venv/Scripts/python -m pytest    #  4 pass
 Proofs: tenant isolation, idempotency-retry, atomic outbox, balanced double-entry,
 idempotent consumption, batch partial-success.
 
+**CI runs the same suites on every push/PR** —
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml): shared-lib tests, the Django
+services against real Postgres **service containers**, the hermetic gateway/ai suites,
+then it builds all four images (→ GHCR on `main`).
+
+---
+
+## Deployment (Phase 7)
+
+Containers → Kubernetes (Helm) → Terraform → CI. Full walkthrough:
+[`docs/phase7.md`](docs/phase7.md). Concept docs:
+[containers](docs/concepts/containers-and-images.md) ·
+[k8s & Helm](docs/concepts/kubernetes-and-helm.md) ·
+[CI/CD](docs/concepts/ci-cd-pipelines.md) ·
+[IaC/Terraform](docs/concepts/infrastructure-as-code.md).
+
+- **One image, many roles** — each service's image runs as the web process *and*, where it
+  has Kafka workers, as those workers (same image, different `command` per Deployment). Four
+  images, seven Deployments.
+- **One DRY Helm chart** ([`deploy/helm/ledgerstream`](deploy/helm/ledgerstream)) renders
+  every service + worker from a `services:` map (`helm lint`/`template` clean → 13 objects).
+  Backing stores (Neon/Upstash/Atlas/Kafka) are **external inputs** (URLs), not chart objects.
+- **Terraform** ([`deploy/terraform`](deploy/terraform)) installs the chart into a namespace
+  and injects secrets via `set_sensitive` (`terraform validate` passes).
+
+### Full local deploy flow (Kubernetes + Helm)
+
+No cloud account needed — this uses **Docker Desktop's built-in Kubernetes** (Settings ⚙ →
+Kubernetes → Enable). `kubectl` ships with Docker Desktop; you only add **Helm**. All commands
+are **PowerShell**. (For `kind`/minikube variants, the raw-manifest alternative, and full
+troubleshooting, see [`docs/phase7.md`](docs/phase7.md) Part 6.)
+
+```powershell
+# 0. Install Helm (one-time; no package manager needed). Then open a NEW terminal.
+$dir = "$env:USERPROFILE\tools\helm"; New-Item -ItemType Directory -Force -Path $dir | Out-Null
+Invoke-WebRequest -Uri "https://get.helm.sh/helm-v3.16.4-windows-amd64.zip" -OutFile "$dir\helm.zip"
+Expand-Archive -Path "$dir\helm.zip" -DestinationPath $dir -Force
+Copy-Item "$dir\windows-amd64\helm.exe" "$dir\helm.exe" -Force
+[Environment]::SetEnvironmentVariable("Path", $env:Path + ";$dir", "User")
+```
+```powershell
+# 1. Confirm the cluster + tools (nodes should be Ready).
+kubectl config use-context docker-desktop; kubectl get nodes; helm version
+```
+```powershell
+# 2. Build the four images. ${s} braces are REQUIRED — PowerShell parses a bare $s:dev as a scoped variable.
+foreach ($s in "payment","ledger","gateway","ai") { docker build -f services/$s/Dockerfile -t "ledgerstream-${s}:dev" . }
+```
+```powershell
+# 3. Put your real secrets in variables (copy the values from your .env).
+$JWT="paste-JWT_SIGNING_KEY"; $DJ="any-random-string"; $PAY_DB="paste-PAYMENT_DATABASE_URL"; $LED_DB="paste-LEDGER_DATABASE_URL"; $REDIS="paste-REDIS_URL"
+```
+```powershell
+# 4. Install the chart (creates the namespace + all 13 objects; one line).
+helm upgrade --install ledgerstream deploy/helm/ledgerstream --namespace ledgerstream --create-namespace --set image.registry=docker.io/library --set image.repositoryPrefix=ledgerstream --set image.tag=dev --set-string secretEnv.JWT_SIGNING_KEY="$JWT" --set-string secretEnv.DJANGO_SECRET_KEY="$DJ" --set-string secretEnv.PAYMENT_DATABASE_URL="$PAY_DB" --set-string secretEnv.LEDGER_DATABASE_URL="$LED_DB" --set-string secretEnv.REDIS_URL="$REDIS"
+```
+```powershell
+# 5. Watch the pods until the *-web ones are Running.
+kubectl -n ledgerstream get pods
+```
+```powershell
+# 6. Reach the gateway (leave running; open a NEW terminal for step 7).
+kubectl -n ledgerstream port-forward svc/ledgerstream-gateway 8010:8010
+```
+```powershell
+# 7. Test it (new terminal).
+curl.exe http://localhost:8010/health/ready
+```
+```powershell
+# 8. Uninstall when done.
+helm -n ledgerstream uninstall ledgerstream
+```
+
+**Expected:** the `*-web` pods go `Running`; the Kafka **worker** pods (`*-outbox-relay`,
+`*-consume-*`) `CrashLoopBackOff` — that's normal (Kafka isn't in the cluster). **To run the
+workers too, add Kafka in-cluster** — the simplest fix — by adding `--set kafka.enabled=true`
+to step 4 (a single-node KRaft broker + Schema Registry, demo-grade). Then the workers connect
+on their own. (Raw-manifest equivalent: `kubectl apply -f deploy/k8s/kafka.yaml`.)
+
+### Alternative: raw manifests instead of Helm (`kubectl`, no Helm)
+
+The same objects are also written as static, per-service YAML in [`deploy/k8s/`](deploy/k8s/)
+(one file per service). Use these **OR** the Helm chart above — not both (same object names).
+After building the images (step 2 above):
+
+```powershell
+# If a Helm release is up, remove it first (name clash), then set your secrets.
+helm -n ledgerstream uninstall ledgerstream
+$JWT="paste-JWT_SIGNING_KEY"; $DJ="any-random-string"; $PAY_DB="paste-PAYMENT_DATABASE_URL"; $LED_DB="paste-LEDGER_DATABASE_URL"; $REDIS="paste-REDIS_URL"
+```
+```powershell
+# Namespace + ConfigMap only (the file intentionally contains NO Secret).
+kubectl apply -f deploy/k8s/00-config.yaml
+```
+```powershell
+# Create the Secret from your variables (keeps secrets out of the file). Must run BEFORE the pods.
+kubectl -n ledgerstream create secret generic ledgerstream-secrets --from-literal=JWT_SIGNING_KEY="$JWT" --from-literal=DJANGO_SECRET_KEY="$DJ" --from-literal=PAYMENT_DATABASE_URL="$PAY_DB" --from-literal=LEDGER_DATABASE_URL="$LED_DB" --from-literal=REDIS_URL="$REDIS" --dry-run=client -o yaml | kubectl apply -f -
+```
+```powershell
+# The four services, then watch + reach the gateway.
+kubectl apply -f deploy/k8s/payment.yaml -f deploy/k8s/ledger.yaml -f deploy/k8s/gateway.yaml -f deploy/k8s/ai.yaml
+kubectl -n ledgerstream get pods
+kubectl -n ledgerstream port-forward svc/ledgerstream-gateway 8010:8010
+```
+```powershell
+# Remove everything.
+kubectl delete -f deploy/k8s/ai.yaml -f deploy/k8s/gateway.yaml -f deploy/k8s/ledger.yaml -f deploy/k8s/payment.yaml -f deploy/k8s/00-config.yaml
+```
+
+**Helm vs raw:** Helm renders the templates + applies + tracks a *release* (`helm uninstall`
+removes all 13 objects at once); raw `kubectl apply` applies the finished YAML yourself, cleaned
+up with `kubectl delete`. Same result. Details: [`deploy/k8s/README.md`](deploy/k8s/README.md).
+
+> Tiering: **CI is load-bearing**; the Helm/Terraform artifacts are validated and locally
+> runnable (as above) but not applied to a live paid cluster.
+
 ---
 
 ## Repository layout
 
 ```
 .
+├── .github/workflows/ci.yml    # CI: test (shared/django+pg/hermetic) → build 4 images → GHCR
+├── deploy/
+│   ├── helm/ledgerstream/      # ONE chart → all services + workers (values.yaml `services:` map)
+│   └── terraform/              # kubernetes + helm providers → install the chart
 ├── docker-compose.yml          # infra stack (health-gated; profiles for cloud/full)
 ├── Makefile                    # common tasks
 ├── .env.example                # env template (cloud + local profiles)
@@ -238,6 +398,7 @@ idempotent consumption, batch partial-success.
 ```
 make up          Start infra (cloud mode), wait until healthy
 make full-up     Start everything incl. local data stores (offline mode)
+make tools-up    Start demo dashboards: Kafka UI (:8085) + RedisInsight (:5540)
 make down        Stop (keep data)      make clean   Stop + delete volumes
 make health      Show container health make logs    Tail logs
 make shared-test Run shared-library unit tests

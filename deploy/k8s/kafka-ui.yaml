@@ -1,0 +1,62 @@
+# =============================================================================
+# kafka-ui.yaml — OPTIONAL: Kafka UI (browse topics/messages/lag/schemas) INSIDE
+# the cluster. Only useful with the in-cluster Kafka from kafka.yaml — a Kafka UI
+# on your host can't reach the cluster's `kafka` Service.
+#
+#   kubectl apply -f deploy/k8s/kafka.yaml       # in-cluster Kafka first
+#   kubectl apply -f deploy/k8s/kafka-ui.yaml    # then this
+#   kubectl -n ledgerstream port-forward svc/kafka-ui 8085:8080
+#   # open http://localhost:8085
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-ui
+  namespace: ledgerstream
+  labels:
+    app: ledgerstream
+    component: kafka-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ledgerstream
+      component: kafka-ui
+  template:
+    metadata:
+      labels:
+        app: ledgerstream
+        component: kafka-ui
+    spec:
+      containers:
+        - name: kafka-ui
+          image: provectuslabs/kafka-ui:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: KAFKA_CLUSTERS_0_NAME
+              value: "ledgerstream"
+            - name: KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS
+              value: "kafka:9092"                  # the in-cluster Kafka Service (kafka.yaml)
+            - name: KAFKA_CLUSTERS_0_SCHEMAREGISTRY
+              value: "http://schema-registry:8081"
+            - name: DYNAMIC_CONFIG_ENABLED
+              value: "true"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-ui                                   # port-forward this to view the UI
+  namespace: ledgerstream
+  labels:
+    app: ledgerstream
+    component: kafka-ui
+spec:
+  selector:
+    app: ledgerstream
+    component: kafka-ui
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

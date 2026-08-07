@@ -1,0 +1,55 @@
+# =============================================================================
+# ingress.yaml — OPTIONAL external entry point (HTTP from outside the cluster).
+#
+# The Services in the other files are type ClusterIP = reachable only INSIDE the
+# cluster. An Ingress exposes them to the outside by host/path. Only the gateway
+# and ai face the world; payment/ledger stay internal.
+#
+# ⚠️ AN INGRESS DOES NOTHING ON ITS OWN. It's just routing *rules* — an **ingress
+# controller** must be running in the cluster to enforce them. Docker Desktop's
+# Kubernetes does NOT include one by default. So this file is OPTIONAL:
+#
+#   • Local dev (no controller): SKIP this file — use `kubectl port-forward`
+#     (the deploy flow in deploy/k8s/README.md). Simpler, nothing to install.
+#
+#   • Want real ingress locally: install a controller first, e.g. NGINX:
+#       kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/cloud/deploy.yaml
+#     then add the host to your hosts file (Windows: C:\Windows\System32\drivers\etc\hosts):
+#       127.0.0.1  ledgerstream.local
+#     then:  kubectl apply -f deploy/k8s/ingress.yaml
+#     and browse http://ledgerstream.local/ (gateway) or /ai (AI service).
+#
+# In a cloud cluster the controller is usually already present (or a LoadBalancer
+# Service is used instead).
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ledgerstream
+  namespace: ledgerstream
+  labels:
+    app: ledgerstream
+spec:
+  # Which controller handles this. Match your installed controller (e.g. "nginx").
+  # Remove this line to use the cluster's default IngressClass.
+  ingressClassName: nginx
+  rules:
+    - host: ledgerstream.local
+      http:
+        paths:
+          # More specific path FIRST: /ai → the AI service.
+          - path: /ai
+            pathType: Prefix
+            backend:
+              service:
+                name: ledgerstream-ai
+                port:
+                  number: 8030
+          # Catch-all: everything else → the API gateway (the public entry point).
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ledgerstream-gateway
+                port:
+                  number: 8010
