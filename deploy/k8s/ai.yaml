@@ -1,0 +1,85 @@
+# =============================================================================
+# ai.yaml — the AI Query service on Kubernetes.
+#
+# The AI service is the one FastAPI (not Django) service, stateless. It answers
+# natural-language questions about a tenant's ledger by calling an LLM with two
+# tenant-scoped read tools — and those tool calls go THROUGH the gateway
+# (AI -> Gateway -> Ledger), reached via GATEWAY_BASE_URL from the ConfigMap.
+#
+# ONE process only (web) → ONE Deployment + ONE Service. No workers.
+#
+# Unlike the others, it has a few EXTRA non-secret env vars set directly on the
+# container (the LLM settings). The AI API keys are OPTIONAL — empty keys mean it
+# uses the offline mock provider.
+# =============================================================================
+
+# --- WEB: the AI query API ---------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledgerstream-ai-web
+  namespace: ledgerstream
+  labels:
+    app: ledgerstream
+    component: ai-web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ledgerstream
+      component: ai-web
+  template:
+    metadata:
+      labels:
+        app: ledgerstream
+        component: ai-web
+    spec:
+      containers:
+        - name: ai
+          image: docker.io/library/ledgerstream-ai:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8030        # AI service listens on 8030 (uvicorn)
+          readinessProbe:
+            tcpSocket: { port: 8030 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 8030 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          envFrom:
+            - configMapRef: { name: ledgerstream-config }   # has GATEWAY_BASE_URL
+            - secretRef: { name: ledgerstream-secrets }     # has JWT key, optional AI keys
+          # AI-only, non-secret settings set directly here (not in the shared
+          # ConfigMap, since only this service uses them).
+          env:
+            - name: LLM_PROVIDER_ORDER
+              value: "claude,openai,mock"   # try Claude, then OpenAI, then offline mock
+            - name: CLAUDE_MODEL
+              value: "claude-opus-5"
+            - name: OPENAI_MODEL
+              value: "gpt-4.1"
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+---
+# --- The Service --------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledgerstream-ai                  # reachable at "ledgerstream-ai:8030"
+  namespace: ledgerstream
+  labels:
+    app: ledgerstream
+    component: ai
+spec:
+  type: ClusterIP
+  selector:
+    app: ledgerstream
+    component: ai-web
+  ports:
+    - name: http
+      port: 8030
+      targetPort: 8030

@@ -1,0 +1,33 @@
+# =============================================================================
+# configmap.yaml — all NON-secret env, in one place, delivered to every pod.
+#
+# A ConfigMap is a key→value store k8s injects into pods (here via `envFrom` in
+# deployment.yaml, so each key becomes an environment variable). Non-sensitive
+# config only — secrets live in secret.yaml.
+#
+# The clever part: the cross-service URLs are COMPUTED from the release name, so
+# gateway/ai find their neighbours in-cluster without anything being hardcoded.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  # e.g. "ledgerstream-config" — referenced by every Deployment's envFrom.
+  name: {{ include "ledgerstream.fullname" . }}-config
+  labels:
+    {{- include "ledgerstream.labels" . | nindent 4 }}
+data:
+  # Non-secret env shared by all pods (LOG_LEVEL, OTEL endpoint, allowed hosts).
+  {{- range $k, $v := .Values.commonEnv }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+  # External dependency endpoints (Kafka bootstrap, Schema Registry URL).
+  {{- range $k, $v := .Values.externalEnv }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+  # Cross-service in-cluster URLs, built from the release name so they always
+  # resolve to the right Services (k8s DNS: "<service>" within the namespace).
+  # Only gateway/ai read these; harmless on the others. They OVERRIDE the
+  # localhost defaults baked into each settings.py — same code, new environment.
+  PAYMENT_BASE_URL: "http://{{ include "ledgerstream.fullname" . }}-payment:{{ .Values.services.payment.port }}"
+  LEDGER_BASE_URL: "http://{{ include "ledgerstream.fullname" . }}-ledger:{{ .Values.services.ledger.port }}"
+  GATEWAY_BASE_URL: "http://{{ include "ledgerstream.fullname" . }}-gateway:{{ .Values.services.gateway.port }}"

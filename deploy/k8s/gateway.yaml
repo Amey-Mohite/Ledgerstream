@@ -1,0 +1,74 @@
+# =============================================================================
+# gateway.yaml — the API Gateway on Kubernetes.
+#
+# The gateway is a STATELESS Django service (no database — Redis only). It's the
+# public front door: edge JWT auth, rate limiting, balances cache, circuit
+# breaker, cursor pagination — then it proxies to payment/ledger.
+#
+# ONE process only (web), so ONE Deployment + ONE Service. No workers.
+#
+# It finds its upstreams via PAYMENT_BASE_URL / LEDGER_BASE_URL from the shared
+# ConfigMap (which point at the payment/ledger Services by DNS name).
+# =============================================================================
+
+# --- WEB: the gateway HTTP entry point ---------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledgerstream-gateway-web
+  namespace: ledgerstream
+  labels:
+    app: ledgerstream
+    component: gateway-web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ledgerstream
+      component: gateway-web
+  template:
+    metadata:
+      labels:
+        app: ledgerstream
+        component: gateway-web
+    spec:
+      containers:
+        - name: gateway
+          image: docker.io/library/ledgerstream-gateway:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8010        # gateway listens on 8010 (not 8000)
+          readinessProbe:
+            tcpSocket: { port: 8010 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 8010 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          envFrom:
+            - configMapRef: { name: ledgerstream-config }   # has PAYMENT_BASE_URL etc.
+            - secretRef: { name: ledgerstream-secrets }     # has REDIS_URL, JWT key
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+---
+# --- The Service: this is the one you port-forward to test the platform -------
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledgerstream-gateway             # reachable at "ledgerstream-gateway:8010"
+  namespace: ledgerstream
+  labels:
+    app: ledgerstream
+    component: gateway
+spec:
+  type: ClusterIP
+  selector:
+    app: ledgerstream
+    component: gateway-web
+  ports:
+    - name: http
+      port: 8010
+      targetPort: 8010

@@ -1,0 +1,108 @@
+# =============================================================================
+# ledger.yaml — the Ledger service on Kubernetes.
+#
+# Ledger is a Django/DRF service holding the immutable double-entry ledger. It
+# runs TWO processes from the same image (docker.io/library/ledgerstream-ledger:dev):
+#
+#   1. web              → the read API (balances / transactions)  — default command
+#   2. consume-payments → Kafka consumer: posts double-entry from PaymentCaptured,
+#                         emits LedgerOutcome (POSTED/REJECTED)   — a worker (needs Kafka)
+#
+# Note: the ledger IMAGE must include the Avro schemas (schemas/avro) because the
+# consumer SERIALIZES LedgerOutcome events — the Dockerfile COPYs them in.
+# =============================================================================
+
+# --- 1. WEB: the ledger read API ---------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledgerstream-ledger-web
+  namespace: ledgerstream
+  labels:
+    app: ledgerstream
+    component: ledger-web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ledgerstream
+      component: ledger-web
+  template:
+    metadata:
+      labels:
+        app: ledgerstream
+        component: ledger-web
+    spec:
+      containers:
+        - name: ledger
+          image: docker.io/library/ledgerstream-ledger:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000       # ledger's container also listens on 8000
+          readinessProbe:
+            tcpSocket: { port: 8000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 8000 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          envFrom:
+            - configMapRef: { name: ledgerstream-config }
+            - secretRef: { name: ledgerstream-secrets }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+---
+# --- 2. CONSUME-PAYMENTS worker (no Service, no probes, no port) --------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledgerstream-ledger-consume-payments
+  namespace: ledgerstream
+  labels:
+    app: ledgerstream
+    component: ledger-consume-payments
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ledgerstream
+      component: ledger-consume-payments
+  template:
+    metadata:
+      labels:
+        app: ledgerstream
+        component: ledger-consume-payments
+    spec:
+      containers:
+        - name: ledger
+          image: docker.io/library/ledgerstream-ledger:dev
+          imagePullPolicy: IfNotPresent
+          command: ["python", "manage.py", "consume_payments"]   # ← the worker
+          envFrom:
+            - configMapRef: { name: ledgerstream-config }
+            - secretRef: { name: ledgerstream-secrets }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+---
+# --- The Service: stable address for the WEB pods only ------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledgerstream-ledger              # reachable at "ledgerstream-ledger:8000"
+  namespace: ledgerstream
+  labels:
+    app: ledgerstream
+    component: ledger
+spec:
+  type: ClusterIP
+  selector:
+    app: ledgerstream
+    component: ledger-web                # ← web pods only, not the consumer
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

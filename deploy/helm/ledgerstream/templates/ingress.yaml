@@ -1,0 +1,44 @@
+# =============================================================================
+# ingress.yaml — OPTIONAL external entry point (HTTP from outside the cluster).
+#
+# ClusterIP Services (service.yaml) are internal-only. An Ingress + an ingress
+# controller route outside traffic to them by host/path. Only gateway + ai face
+# the world; payment/ledger stay internal. OFF by default (dev uses
+# `kubectl port-forward`); enable with ingress.enabled=true in values.yaml.
+# =============================================================================
+
+{{/* Render nothing unless the operator turned ingress on. */}}
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "ledgerstream.fullname" . }}
+  labels:
+    {{- include "ledgerstream.labels" . | nindent 4 }}
+spec:
+  {{- with .Values.ingress.className }}
+  # Which ingress controller handles this (e.g. "nginx"); omitted if unset.
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    # All rules under one host (e.g. "ledgerstream.local").
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          # More specific path first: /ai → the AI service.
+          - path: /ai
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ledgerstream.fullname" . }}-ai
+                port:
+                  number: {{ .Values.services.ai.port }}
+          # Catch-all: everything else → the API gateway (the public entry point).
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ledgerstream.fullname" . }}-gateway
+                port:
+                  number: {{ .Values.services.gateway.port }}
+{{- end }}

@@ -1,0 +1,61 @@
+# =============================================================================
+# 00-config.yaml — the SHARED pieces every service needs. Apply this FIRST.
+#
+# These are the plain, static equivalent of what the Helm chart generates. Use
+# EITHER the Helm chart OR these raw files — not both (they use the same object
+# names). Apply order: this file first (namespace + config + secret), then each
+# per-service file (payment.yaml, ledger.yaml, gateway.yaml, ai.yaml).
+#
+#   kubectl apply -f deploy/k8s/00-config.yaml
+#   kubectl apply -f deploy/k8s/payment.yaml   # (and ledger/gateway/ai)
+# =============================================================================
+
+# --- The namespace all objects live in ---------------------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ledgerstream
+---
+# --- ConfigMap: NON-secret settings, injected into every pod as env vars ------
+# (Every Deployment references this via `envFrom`.)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ledgerstream-config
+  namespace: ledgerstream
+data:
+  # Shared app settings.
+  LOG_LEVEL: "INFO"
+  DJANGO_ALLOWED_HOSTS: "*"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+  # External dependency endpoints. Default = in-cluster names. For workers to
+  # reach Kafka running in your host docker-compose, change these to
+  # host.docker.internal:29092 / http://host.docker.internal:8081.
+  KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+  SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
+  # Cross-service URLs. In Kubernetes, a Service name resolves via cluster DNS,
+  # so "ledgerstream-payment" is a real hostname. These OVERRIDE the localhost
+  # defaults baked into each settings.py — same code, cluster addressing.
+  # Only gateway/ai actually read these; harmless on the others.
+  PAYMENT_BASE_URL: "http://ledgerstream-payment:8000"
+  LEDGER_BASE_URL: "http://ledgerstream-ledger:8000"
+  GATEWAY_BASE_URL: "http://ledgerstream-gateway:8010"
+# --- Secret: created from the COMMAND LINE, not stored in this file -----------
+# A plain manifest is static — kubectl can't pull values from env vars or .env —
+# so we deliberately DON'T put a Secret here (no hardcoded secrets in git). The
+# Deployments reference a Secret named "ledgerstream-secrets"; create it from
+# your PowerShell variables BEFORE applying the service files:
+#
+#   kubectl -n ledgerstream create secret generic ledgerstream-secrets `
+#     --from-literal=JWT_SIGNING_KEY="$JWT" `
+#     --from-literal=DJANGO_SECRET_KEY="$DJ" `
+#     --from-literal=PAYMENT_DATABASE_URL="$PAY_DB" `
+#     --from-literal=LEDGER_DATABASE_URL="$LED_DB" `
+#     --from-literal=REDIS_URL="$REDIS" `
+#     --dry-run=client -o yaml | kubectl apply -f -
+#
+# (Optional: add --from-literal=ANTHROPIC_API_KEY=... / OPENAI_API_KEY=... for
+# real LLM answers; omit them and the AI service uses the offline mock provider.)
+#
+# Do NOT use `--from-env-file=.env` here: your .env holds localhost values (Kafka,
+# base URLs) that would override the cluster-correct ConfigMap above.

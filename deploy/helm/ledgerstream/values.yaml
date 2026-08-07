@@ -1,0 +1,129 @@
+# =============================================================================
+# Ledgerstream Helm values.
+#
+# ONE chart renders all four services because they're the same shape (a Python
+# web process, some with extra Kafka worker processes). The `services:` map below
+# is the whole variability surface; templates/ ranges over it.
+#
+# WHAT THIS CHART DEPLOYS:   the 4 stateless app services + their workers.
+# WHAT IT DOES NOT:          Postgres/Redis/Mongo/Kafka/Schema-Registry. Those are
+#                            managed/external — you pass their URLs in `secretEnv`
+#                            (secrets) and `externalEnv` (non-secret endpoints).
+# =============================================================================
+
+# --- Container image (all services share a registry + tag; name is the map key) -
+# Final image ref = "{registry}/{repositoryPrefix}-{serviceName}:{tag}"
+#   e.g. ghcr.io/your-github-username/ledgerstream-payment:latest
+image:
+  registry: ghcr.io/your-github-username   # <-- REPLACE with your GHCR owner
+  repositoryPrefix: ledgerstream
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# --- Default pod resources (per container; override per service if needed) -----
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# --- Non-secret env shared by every pod (lands in the ConfigMap) ---------------
+commonEnv:
+  LOG_LEVEL: INFO
+  DJANGO_ALLOWED_HOSTS: "*"
+  # Traces/metrics — points at the otel-collector Service in-cluster.
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+
+# --- External dependency endpoints (non-secret; in the ConfigMap) --------------
+# In-cluster DNS names if you also run Kafka/SR in the cluster; otherwise the
+# managed/cloud host:port. Payment + Ledger read these.
+externalEnv:
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  SCHEMA_REGISTRY_URL: http://schema-registry:8081
+
+# --- Secret env (lands in the Secret) ------------------------------------------
+# PLACEHOLDERS. Never commit real values here. Supply them at install time with
+#   helm install ... --set-string secretEnv.JWT_SIGNING_KEY=... (or Terraform,
+#   or a SealedSecret / External Secrets Operator in real clusters).
+# Empty optional keys (ANTHROPIC/OPENAI) are fine — the AI service falls back to
+# the mock provider.
+secretEnv:
+  JWT_SIGNING_KEY: ""            # REQUIRED — shared HMAC key for all services
+  DJANGO_SECRET_KEY: ""         # REQUIRED for the Django services
+  PAYMENT_DATABASE_URL: ""      # REQUIRED — payment's Postgres (Neon)
+  LEDGER_DATABASE_URL: ""       # REQUIRED — ledger's Postgres (Neon)
+  REDIS_URL: ""                 # REQUIRED for gateway — Upstash (rediss://)
+  MONGO_URL: ""                 # ledger read model (deferred; may be empty)
+  ANTHROPIC_API_KEY: ""         # optional — AI service
+  OPENAI_API_KEY: ""            # optional — AI service
+
+# --- Optional in-cluster Kafka + Schema Registry (demo-grade) -----------------
+# OFF by default: normally Kafka is external (managed / your docker-compose). Turn
+# ON (--set kafka.enabled=true) to run a single-node KRaft broker + Schema Registry
+# INSIDE the cluster, named `kafka` / `schema-registry` so the worker pods resolve
+# them with no other change. Ephemeral storage, 1 partition — for demos, not prod.
+kafka:
+  enabled: false
+  image: apache/kafka:3.8.0
+  schemaRegistryImage: confluentinc/cp-schema-registry:7.7.0
+  clusterId: "ledgerstream-local-cluster-0"
+  autoCreateTopics: true
+  # Kafka UI (browse topics/messages/lag) — rendered only when kafka.enabled too.
+  # port-forward svc/kafka-ui 8085:8080 to view it. Set false to skip.
+  uiEnabled: true
+  uiImage: provectuslabs/kafka-ui:latest
+
+# --- Ingress (optional; off by default — use `kubectl port-forward` in dev) ----
+ingress:
+  enabled: false
+  className: ""
+  host: ledgerstream.local
+  # Only these two services face the outside world; payment/ledger are internal.
+  # gateway at "/", ai at "/ai" (rewrite handled by your controller if needed).
+
+# --- The services. Map KEY is the service name (and the image suffix). ---------
+# workloads: one Deployment each. A workload with NO `command` is the "web"
+# process (uses the image's default CMD, gets a Service + probes). A workload
+# WITH `command` is a Kafka worker (no Service, no HTTP probes).
+services:
+  payment:
+    port: 8000
+    workloads:
+      - name: web
+        replicas: 2
+      - name: outbox-relay
+        command: ["python", "manage.py", "run_outbox_relay"]
+        replicas: 1
+      - name: ledger-outcomes
+        command: ["python", "manage.py", "consume_ledger_outcomes"]
+        replicas: 1
+
+  ledger:
+    port: 8000
+    workloads:
+      - name: web
+        replicas: 2
+      - name: consume-payments
+        command: ["python", "manage.py", "consume_payments"]
+        replicas: 1
+
+  gateway:
+    port: 8010
+    # PAYMENT_BASE_URL / LEDGER_BASE_URL are computed in the ConfigMap from the
+    # release name, so they always point at the right in-cluster Services.
+    workloads:
+      - name: web
+        replicas: 2
+
+  ai:
+    port: 8030
+    # GATEWAY_BASE_URL is computed in the ConfigMap. These are AI-only, non-secret.
+    env:
+      LLM_PROVIDER_ORDER: "claude,openai,mock"
+      CLAUDE_MODEL: "claude-opus-5"
+      OPENAI_MODEL: "gpt-4.1"
+    workloads:
+      - name: web
+        replicas: 2

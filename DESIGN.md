@@ -750,3 +750,71 @@ Teaching walkthrough: `docs/phase6.md`.
 Ledger) and the MCP server (needs the `mcp` package + an MCP client) were written +
 compile/`pytest`-verified via the mock; the grounded tool-use loop, guardrails, and
 failover are covered by the 9 hermetic tests.
+
+### Phase 7 — Deployment: Containers, k8s/Helm, IaC & CI ✅
+**Delivered:** the path from "code on my laptop" to "running in a cluster", and the
+automation that guards it. (1) **CI** (`.github/workflows/ci.yml`, GitHub Actions) — the
+one **load-bearing (Tier 1)** artifact: on every push/PR it runs the shared-lib tests,
+the two Django services against real Postgres **service containers** (mirroring the
+5433/5434 dev ports the conftests default to), the hermetic gateway/ai suites (fakeredis
++ mock LLM), then **builds all four images** and pushes them to **GHCR** on `main`.
+(2) **One DRY Helm chart** (`deploy/helm/ledgerstream`) — a single parameterized chart
+renders **all four services + their Kafka workers** by ranging over a `services:` map;
+one Deployment per (service, workload), a Service per service's *web* pods, a shared
+ConfigMap (non-secret env + release-computed cross-service URLs) and Secret (placeholders,
+real values at install). `helm lint` + `helm template` clean (13 objects). (3) **Terraform**
+(`deploy/terraform`) — the `kubernetes` + `helm` providers make `terraform apply` create
+the namespace and install the chart, injecting secrets via `set_sensitive`; `terraform
+validate` passes. Backing stores (Postgres/Redis/Mongo/Kafka/SR) stay **external inputs**
+(managed services / the compose stack), passed in as URLs — the chart deploys only the
+stateless app tier.
+
+**Skills checked off:** **containerization** (multi-stage-ready Dockerfiles, non-root,
+repo-root build context for the shared lib, one image → many run modes via `command`
+override) · **Kubernetes** workloads (Deployments, Services, ConfigMap/Secret, probes,
+one-image-many-Deployments for web vs workers) · **Helm** templating (a DRY chart over a
+values map, `_helpers.tpl`, computed in-cluster DNS) · **CI/CD** (test matrix, service
+containers, image build+push, GHCR) · **Infrastructure as Code** (Terraform providers,
+`set_sensitive`, state hygiene / gitignore).
+
+**Concept docs written:** `containers-and-images.md`, `kubernetes-and-helm.md`,
+`ci-cd-pipelines.md`, `infrastructure-as-code.md`. Teaching walkthrough: `docs/phase7.md`.
+
+**Decisions & trade-offs:**
+- **One chart, not four.** The services are the same shape, so a single chart ranging
+  over a `services:` map beats four near-identical copies — less to drift, and it *shows*
+  the k8s model (one image, different `command` per Deployment) rather than hiding it.
+  `# ponytail`: raw k8s manifests were skipped — `helm template` renders them on demand.
+- **Backing stores are external inputs, not chart objects.** The chart owns only the
+  stateless app tier; databases/broker are managed services (Neon/Upstash/Atlas/Kafka)
+  referenced by URL. Keeps the deploy story honest (no stateful sets pretending to be
+  production data stores) and matches how the app already runs.
+- **Workers are their own Deployments.** `run_outbox_relay` / `consume_payments` /
+  `consume_ledger_outcomes` scale and fail independently of the web tier — the same
+  "consumers never run in the request cycle" rule, expressed in k8s.
+- **CI is the real deliverable; Helm/Terraform are demonstrative (Tier 3).** CI runs on
+  every commit and catches breakage; the cluster artifacts are portfolio-grade and
+  validated (`helm lint`, `terraform validate`) but not applied to a live paid cluster.
+- **Secrets never in the chart/state.** `secretEnv`/`tfvars` are placeholders; real values
+  arrive via `--set-string` / `TF_VAR_secrets`; `deploy/terraform/.gitignore` blocks state
+  + tfvars (state can contain secrets). Production would use SealedSecrets / External
+  Secrets Operator — noted, not built.
+- **TCP probes, not HTTP.** Readiness/liveness use a TCP check on the port (always correct
+  for a listening gunicorn/uvicorn); upgrading to `httpGet /health/ready` is a one-line
+  values change where the endpoint exists.
+
+**Scaffolded — be ready to explain (may not fully grasp yet):**
+- The **one-image / many-Deployments** pattern (default CMD = web; `command:` override =
+  worker) and why workers get no Service.
+- How Helm computes **in-cluster DNS** (`<release>-<service>`) so gateway/ai find their
+  upstreams without hardcoding.
+- Why **state hygiene** matters in Terraform (state holds resource attributes incl.
+  secrets) and how `set_sensitive` keeps them out of plan output.
+- The CI **service-container** trick (real Postgres on 5433/5434) vs hermetic suites, and
+  why the build job is gated behind the test jobs (`needs:`).
+
+**Not run live this session:** no live cluster was provisioned, so the Helm release and
+`terraform apply` were **validated** (`helm lint`, `helm template` → 13 objects,
+`terraform validate`) but not deployed; the CI workflow is committed and will run on the
+next push (GHCR push only on `main`). Everything is portable — a `kind` cluster runs it
+locally per `docs/phase7.md`.

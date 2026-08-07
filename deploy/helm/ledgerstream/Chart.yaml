@@ -1,0 +1,21 @@
+# Chart.yaml — the chart's identity card. Every Helm chart needs one; `helm`
+# reads it to know the name, version, and API compatibility.
+
+apiVersion: v2                 # v2 = Helm 3 chart format (v1 was Helm 2).
+name: ledgerstream             # the chart name (used in object names/labels).
+description: >-
+  Ledgerstream — the four stateless application services (payment, ledger,
+  gateway, ai) plus their Kafka worker Deployments. Backing stores (Postgres,
+  Redis, Mongo, Kafka, Schema Registry) are EXTERNAL to this chart: they're
+  passed in as connection strings/URLs (managed services in the cloud, or the
+  docker-compose stack in dev). One parameterized chart renders all services —
+  see values.yaml `services:`.
+type: application              # "application" (deployable) vs "library" (helpers only).
+
+# The chart's OWN version (bump this when you change templates/values). Helm uses
+# it for release history and packaging; it appears in the helm.sh/chart label.
+version: 0.1.0
+
+# The version of the APP this chart deploys — informational only. The real image
+# version comes from image.tag in values.yaml, not from here.
+appVersion: "phase7"

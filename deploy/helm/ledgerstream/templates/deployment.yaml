@@ -1,0 +1,107 @@
+# =============================================================================
+# deployment.yaml — the heart of the chart.
+#
+# Renders ONE Kubernetes Deployment per (service, workload). A Deployment is the
+# object that says "keep N identical pods of this image running, and roll them
+# out/back safely." Two nested loops turn the `services:` map in values.yaml into
+# every Deployment the platform needs:
+#
+#   outer loop → each service   (payment, ledger, gateway, ai)
+#   inner loop → each workload  of that service:
+#       • NO `command`  → the WEB process (image's default CMD) → gets a port + probes
+#       • HAS `command` → a Kafka WORKER (overrides the CMD)     → no port, no probes
+#
+# Result: payment→3 Deployments (web, outbox-relay, ledger-outcomes), ledger→2,
+# gateway→1, ai→1 = 7 Deployments, all from this one file.
+# =============================================================================
+
+{{/* Save the root context (.Values/.Release/...) before the loops reassign "." */}}
+{{- $root := . }}
+{{/* Outer loop: $svcName = map key ("payment"), $svc = its config ({port, workloads}) */}}
+{{- range $svcName, $svc := .Values.services }}
+{{/* Inner loop: $wl = one workload ({name, replicas, optional command}) */}}
+{{- range $wl := $svc.workloads }}
+{{/* $isWeb is true when the workload has NO command override (i.e. it's the web process) */}}
+{{- $isWeb := not $wl.command }}
+apiVersion: apps/v1            # Deployment lives in the apps/v1 API group
+kind: Deployment
+metadata:
+  # Unique name per workload, e.g. "ledgerstream-payment-outbox-relay".
+  name: {{ include "ledgerstream.fullname" $root }}-{{ $svcName }}-{{ $wl.name }}
+  labels:
+    # Shared recommended labels (name/instance/version/managed-by) from _helpers.tpl.
+    {{- include "ledgerstream.labels" $root | nindent 4 }}
+    # A per-workload "component" label so this exact workload is addressable.
+    app.kubernetes.io/component: {{ $svcName }}-{{ $wl.name }}
+spec:
+  # How many identical pods to keep running (defaults to 1 if not set in values).
+  replicas: {{ $wl.replicas | default 1 }}
+  selector:
+    # The Deployment OWNS pods whose labels match this. Must equal the pod
+    # template labels below, or the Deployment won't recognise its own pods.
+    matchLabels:
+      {{- include "ledgerstream.selectorLabels" $root | nindent 6 }}
+      app.kubernetes.io/component: {{ $svcName }}-{{ $wl.name }}
+  template:
+    # The pod blueprint. Change it → k8s does a rolling update to new pods.
+    metadata:
+      labels:
+        # These labels are stamped on every pod; the Service selector (service.yaml)
+        # matches the "-web" component to route traffic only to web pods.
+        {{- include "ledgerstream.selectorLabels" $root | nindent 8 }}
+        app.kubernetes.io/component: {{ $svcName }}-{{ $wl.name }}
+    spec:
+      containers:
+        - name: {{ $svcName }}
+          # Final image ref, e.g. "ghcr.io/you/ledgerstream-payment:latest".
+          # Same image for web AND workers — only the command differs.
+          image: "{{ $root.Values.image.registry }}/{{ $root.Values.image.repositoryPrefix }}-{{ $svcName }}:{{ $root.Values.image.tag }}"
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          {{- with $wl.command }}
+          # WORKER only: override the image's default CMD with this command
+          # (e.g. ["python","manage.py","consume_payments"]). toJson makes a valid
+          # YAML/JSON array. If absent, the image's default CMD (the web server) runs.
+          command: {{ toJson . }}
+          {{- end }}
+          {{- if $isWeb }}
+          # WEB only: expose the HTTP port and health-check it. Workers serve no
+          # HTTP, so they get neither.
+          ports:
+            - name: http
+              containerPort: {{ $svc.port }}
+          # Readiness = "can it serve traffic now?" Fail → pulled from the Service's
+          # endpoints (no traffic) but not restarted. TCP check = is the port open.
+          readinessProbe:
+            tcpSocket:
+              port: {{ $svc.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          # Liveness = "is it wedged?" Fail → k8s restarts the container.
+          livenessProbe:
+            tcpSocket:
+              port: {{ $svc.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          {{- end }}
+          # Inject config as env vars: the shared ConfigMap (non-secret) + Secret.
+          # envFrom pulls EVERY key from each into the pod's environment.
+          envFrom:
+            - configMapRef:
+                name: {{ include "ledgerstream.fullname" $root }}-config
+            - secretRef:
+                name: {{ include "ledgerstream.fullname" $root }}-secrets
+          {{- with $svc.env }}
+          # Per-service extra non-secret env (e.g. ai's LLM_PROVIDER_ORDER). Only
+          # rendered for services that define `env:` in values.yaml.
+          env:
+            {{- range $k, $v := . }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- end }}
+          # CPU/memory requests (scheduler guarantees) + limits (hard caps).
+          resources:
+            {{- toYaml $root.Values.resources | nindent 12 }}
+---
+{{- end }}
+{{- end }}

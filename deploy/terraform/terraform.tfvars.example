@@ -1,0 +1,21 @@
+# Copy to terraform.tfvars (gitignored) and fill in. Secrets are best supplied
+# OUT of any committed file — via `TF_VAR_secrets` or a secrets manager — but the
+# shape is shown here for clarity.
+
+image_registry = "ghcr.io/your-github-username"
+image_tag      = "latest"
+
+# Point at your cluster (kind/minikube/cloud). Defaults to ~/.kube/config.
+# kube_context = "kind-ledgerstream"
+# namespace    = "ledgerstream"
+
+# DO NOT COMMIT REAL SECRETS. Prefer:  export TF_VAR_secrets='{...}'
+# secrets = {
+#   JWT_SIGNING_KEY      = "..."
+#   DJANGO_SECRET_KEY    = "..."
+#   PAYMENT_DATABASE_URL = "postgresql://.../payment?sslmode=require"
+#   LEDGER_DATABASE_URL  = "postgresql://.../ledger?sslmode=require"
+#   REDIS_URL            = "rediss://...upstash.io:6379"
+#   # ANTHROPIC_API_KEY  = "..."   # optional
+#   # OPENAI_API_KEY     = "..."   # optional
+# }

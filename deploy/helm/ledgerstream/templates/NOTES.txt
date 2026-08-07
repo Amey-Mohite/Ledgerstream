@@ -1,0 +1,36 @@
+{{/*
+NOTES.txt — printed to the terminal AFTER `helm install`/`upgrade`. It's a
+template too (so it can echo real names/ports), but it renders to plain text,
+not a k8s object. Use it to tell the operator "what now?".
+*/}}
+Ledgerstream {{ .Chart.AppVersion }} installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+{{/* List every Deployment we created, looping the same map the templates use. */}}
+Deployments created (one per service+workload):
+{{- range $svcName, $svc := .Values.services }}
+{{- range $wl := $svc.workloads }}
+  - {{ include "ledgerstream.fullname" $ }}-{{ $svcName }}-{{ $wl.name }} (replicas: {{ $wl.replicas | default 1 }})
+{{- end }}
+{{- end }}
+
+Check rollout:
+  kubectl -n {{ .Release.Namespace }} get pods,svc
+
+{{/* port-forward = tunnel a local port to an in-cluster Service, no ingress needed. */}}
+Reach the gateway locally (no ingress needed):
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "ledgerstream.fullname" . }}-gateway {{ .Values.services.gateway.port }}:{{ .Values.services.gateway.port }}
+
+Reach the AI service locally:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "ledgerstream.fullname" . }}-ai {{ .Values.services.ai.port }}:{{ .Values.services.ai.port }}
+
+{{/* Guard rail: warn loudly if the required signing key was left empty. */}}
+{{- if not .Values.secretEnv.JWT_SIGNING_KEY }}
+
+WARNING: secretEnv.JWT_SIGNING_KEY is empty. The services will fail to start.
+Re-install with your secrets, e.g.:
+  helm upgrade --install {{ .Release.Name }} deploy/helm/ledgerstream \
+    --set-string secretEnv.JWT_SIGNING_KEY=... \
+    --set-string secretEnv.PAYMENT_DATABASE_URL=... \
+    --set-string secretEnv.LEDGER_DATABASE_URL=... \
+    --set-string secretEnv.REDIS_URL=...
+{{- end }}
